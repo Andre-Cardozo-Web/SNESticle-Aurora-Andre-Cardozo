@@ -104,8 +104,9 @@ Bool SNSuperGameBoy::AttachGame(const Uint8 *pData, Uint32 nBytes, ModelE eModel
         ? SNSGBICD2::MODEL_SGB2 : SNSGBICD2::MODEL_SGB1);
     AuroraSgbBootTrace("SGB 4G: install hooks");
     m_GB.SetHooks(&SNSuperGameBoy::JoypHook,
-                  &SNSuperGameBoy::ScanlineHook,
-                  &SNSuperGameBoy::LineHook, this);
+                  &SNSuperGameBoy::PixelHook,
+                  &SNSuperGameBoy::HResetHook,
+                  &SNSuperGameBoy::VResetHook, this);
     ResetAudioPipeline();
     m_bActive = TRUE;
     AuroraSgbBootTrace("SGB 4H: attach ready");
@@ -114,7 +115,7 @@ Bool SNSuperGameBoy::AttachGame(const Uint8 *pData, Uint32 nBytes, ModelE eModel
 
 void SNSuperGameBoy::Detach()
 {
-    m_GB.SetHooks(NULL, NULL, NULL, NULL);
+    m_GB.SetHooks(NULL, NULL, NULL, NULL, NULL);
     m_GB.UnloadROM();
     m_ICD2.Reset(SNSGBICD2::MODEL_NONE);
     m_bActive = FALSE;
@@ -254,8 +255,9 @@ void SNSuperGameBoy::Reset()
     m_GB.Reset(m_eModel == MODEL_SGB2 ? GBHost::MODEL_SGB2 : GBHost::MODEL_SGB1);
     ResetAudioPipeline();
     m_GB.SetHooks(&SNSuperGameBoy::JoypHook,
-                  &SNSuperGameBoy::ScanlineHook,
-                  &SNSuperGameBoy::LineHook, this);
+                  &SNSuperGameBoy::PixelHook,
+                  &SNSuperGameBoy::HResetHook,
+                  &SNSuperGameBoy::VResetHook, this);
 }
 
 Uint8 SNSuperGameBoy::Read(Uint32 uAddr, Uint8 uOpenBus)
@@ -336,63 +338,98 @@ void SNSuperGameBoy::AdvanceMasterClocks(Uint32 nClocks, Uint32 uSnesMasterHz)
 void SNSuperGameBoy::MixAudio(Int16 *pLeft, Int16 *pRight, Int32 nSamples, Uint32 uOutputHz)
 {
     Int16 raw[256 * 2];
-    Uint32 sourceHz, step, produced = 0;
-    Uint64 needPhase, rawNeed;
+    Uint32 rawPos = 0, rawCount = 0;
+    Uint32 produced = 0;
+    Uint32 sourceHz;
+    Uint64 denominator;
 
     if (!m_bActive || !pLeft || nSamples <= 0 || !uOutputHz || m_bBootHandshake)
         return;
+
     sourceHz = m_GB.GetClockHz();
-    if (!sourceHz) return;
-    if ((Uint64)uOutputHz * AUDIO_SOURCE_CLOCKS_PER_SAMPLE >= sourceHz)
-        return; /* V0.5 is a downsampler, never an upsampler. */
-    step = uOutputHz * AUDIO_SOURCE_CLOCKS_PER_SAMPLE;
+    if (!sourceHz)
+        return;
 
-    /* Exact minimum raw frames that can produce nSamples outputs. Reading no
-       more than this is important: mAudioBufferRead consumes its FIFO. */
-    needPhase = (Uint64)(Uint32)nSamples * sourceHz;
-    if (needPhase <= m_uAudioPhase) return;
-    needPhase -= m_uAudioPhase;
-    rawNeed = (needPhase + step - 1U) / step;
+    /*
+     * AURORA_SGB_SAMEBOY_RUNTIME_CURE_V1_20260906
+     *
+     * SameBoy is configured exactly like bsnes:
+     *     GB_set_sample_rate_by_clocks(..., 256)
+     *
+     * SameBoy execution accounting uses 8 MHz ticks, while
+     * GB_get_clock_rate() is the ~4 MHz hardware clock. Therefore one callback
+     * sample is produced every 128 hardware clocks, about 33.5 kHz on SGB1.
+     *
+     * The old Aurora mixer was downsample-only and assumed 32 clocks/sample.
+     * A PS2/SNES output domain such as 48 kHz therefore could not be represented
+     * correctly. Use a rational zero-order hold resampler instead. SameBoy has
+     * already band-limited the source; this stage only changes sample cadence.
+     */
+    denominator = (Uint64)uOutputHz * (Uint64)AUDIO_SOURCE_CLOCKS_PER_SAMPLE;
+    if (!denominator)
+        return;
 
-    while (rawNeed && produced < (Uint32)nSamples)
+    /* m_iAudioSum{Left,Right} are the persistent held source sample.
+       m_uAudioCount is 0/1 validity in STATE_VERSION 4. */
+    if (!m_uAudioCount)
     {
-        Uint32 request = rawNeed > 256U ? 256U : (Uint32)rawNeed;
-        Uint32 got = m_GB.ReadAudioFrames(raw, request);
-        Uint32 i;
-        if (!got) break;
-        rawNeed -= got;
+        if (m_GB.ReadAudioFrames(raw, 1) != 1)
+            return;
+        m_iAudioSumLeft = raw[0];
+        m_iAudioSumRight = raw[1];
+        m_uAudioCount = 1;
+    }
 
-        for (i = 0; i < got && produced < (Uint32)nSamples; ++i)
+    while (produced < (Uint32)nSamples)
+    {
+        Int32 gbL = m_iAudioSumLeft * AUDIO_GAIN_NUM / AUDIO_GAIN_DEN;
+        Int32 gbR = m_iAudioSumRight * AUDIO_GAIN_NUM / AUDIO_GAIN_DEN;
+
+        if (pRight)
         {
-            m_iAudioSumLeft += raw[i * 2U + 0U];
-            m_iAudioSumRight += raw[i * 2U + 1U];
-            ++m_uAudioCount;
-            m_uAudioPhase += step;
-
-            if (m_uAudioPhase >= sourceHz)
-            {
-                Int32 gbL, gbR;
-                m_uAudioPhase -= sourceHz;
-                if (!m_uAudioCount) continue;
-                gbL = (m_iAudioSumLeft / (Int32)m_uAudioCount) * AUDIO_GAIN_NUM / AUDIO_GAIN_DEN;
-                gbR = (m_iAudioSumRight / (Int32)m_uAudioCount) * AUDIO_GAIN_NUM / AUDIO_GAIN_DEN;
-                if (pRight)
-                {
-                    pLeft[produced] = Saturate16((Int32)pLeft[produced] + gbL);
-                    pRight[produced] = Saturate16((Int32)pRight[produced] + gbR);
-                }
-                else
-                {
-                    Int32 gbM = (gbL + gbR) / 2;
-                    pLeft[produced] = Saturate16((Int32)pLeft[produced] + gbM);
-                }
-                ++produced;
-                m_iAudioSumLeft = 0;
-                m_iAudioSumRight = 0;
-                m_uAudioCount = 0;
-            }
+            pLeft[produced] =
+                Saturate16((Int32)pLeft[produced] + gbL);
+            pRight[produced] =
+                Saturate16((Int32)pRight[produced] + gbR);
         }
-        if (got < request) break;
+        else
+        {
+            pLeft[produced] =
+                Saturate16((Int32)pLeft[produced] + (gbL + gbR) / 2);
+        }
+
+        ++produced;
+        m_uAudioPhase += sourceHz;
+
+        while ((Uint64)m_uAudioPhase >= denominator)
+        {
+            if (rawPos >= rawCount)
+            {
+                Uint64 future;
+                Uint64 need64;
+                Uint32 request;
+
+                /* Exact upper bound of source transitions still needed by
+                   this output call. Never consume FIFO frames speculatively. */
+                future = (Uint64)m_uAudioPhase +
+                    (Uint64)((Uint32)nSamples - produced) * sourceHz;
+                need64 = future / denominator;
+                if (!need64)
+                    need64 = 1;
+                request = need64 > 256ULL ? 256U : (Uint32)need64;
+
+                rawCount = m_GB.ReadAudioFrames(raw, request);
+                rawPos = 0;
+                if (!rawCount)
+                    return;
+            }
+
+            m_iAudioSumLeft = raw[rawPos * 2U + 0U];
+            m_iAudioSumRight = raw[rawPos * 2U + 1U];
+            ++rawPos;
+            m_uAudioPhase =
+                (Uint32)((Uint64)m_uAudioPhase - denominator);
+        }
     }
 }
 
@@ -404,18 +441,25 @@ Uint8 SNSuperGameBoy::JoypHook(void *pContext, Bool bP14, Bool bP15, Bool bWrite
                   : p->m_ICD2.JoypRead(bP14, bP15);
 }
 
-void SNSuperGameBoy::ScanlineHook(void *pContext, Int32 y, const Uint8 *pShade160)
+void SNSuperGameBoy::PixelHook(void *pContext, Uint8 uColor)
 {
     SNSuperGameBoy *p = (SNSuperGameBoy *)pContext;
     if (p && p->m_bActive)
-        p->m_ICD2.PushLCDScanline(y, pShade160);
+        p->m_ICD2.PPUWrite(uColor);
 }
 
-void SNSuperGameBoy::LineHook(void *pContext, Int32 y)
+void SNSuperGameBoy::HResetHook(void *pContext)
 {
     SNSuperGameBoy *p = (SNSuperGameBoy *)pContext;
     if (p && p->m_bActive)
-        p->m_ICD2.EndLCDLine(y);
+        p->m_ICD2.PPUHReset();
+}
+
+void SNSuperGameBoy::VResetHook(void *pContext)
+{
+    SNSuperGameBoy *p = (SNSuperGameBoy *)pContext;
+    if (p && p->m_bActive)
+        p->m_ICD2.PPUVReset();
 }
 
 Bool SNSuperGameBoy::AttachSavedata(const Uint8 *pData, Uint32 nBytes)
@@ -524,7 +568,8 @@ Bool SNSuperGameBoy::RestoreState(const void *pData, Uint32 nBytes)
     m_iAudioSumRight = h.AudioSumRight;
     m_uAudioCount = h.AudioCount;
     m_GB.SetHooks(&SNSuperGameBoy::JoypHook,
-                  &SNSuperGameBoy::ScanlineHook,
-                  &SNSuperGameBoy::LineHook, this);
+                  &SNSuperGameBoy::PixelHook,
+                  &SNSuperGameBoy::HResetHook,
+                  &SNSuperGameBoy::VResetHook, this);
     return TRUE;
 }

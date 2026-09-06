@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "sameboy_ps2_compat.h"
 
 int aurora_sameboy_vasprintf(char **out, const char *fmt, va_list ap)
 {

@@ -67,7 +67,7 @@ public:
 
 private:
     static const Uint32 STATE_MAGIC = 0x35424753U; /* SGB5 */
-    static const Uint32 STATE_VERSION = 3U;
+    static const Uint32 STATE_VERSION = 4U;
     enum {
         BOOT_HEADER_BYTES = 0x4c, /* GB $0104-$014f */
         BOOT_PACKET_COUNT = 6,
@@ -75,7 +75,7 @@ private:
         BOOT_LCD_LINE_CLOCKS = 456,
         BOOT_WAIT_CLOCKS = 70224U * 4U,
         MAX_SAVEDATA_BYTES = 1024U * 1024U,
-        AUDIO_SOURCE_CLOCKS_PER_SAMPLE = 32U,
+        AUDIO_SOURCE_CLOCKS_PER_SAMPLE = 128U,
         AUDIO_GAIN_NUM = 1U,
         AUDIO_GAIN_DEN = 2U
     };
@@ -106,8 +106,9 @@ private:
     static Int16 Saturate16(Int32 value);
 
     static Uint8 JoypHook(void *pContext, Bool bP14, Bool bP15, Bool bWrite);
-    static void ScanlineHook(void *pContext, Int32 y, const Uint8 *pShade160);
-    static void LineHook(void *pContext, Int32 y);
+    static void PixelHook(void *pContext, Uint8 uColor);
+    static void HResetHook(void *pContext);
+    static void VResetHook(void *pContext);
 };
 
 #endif

@@ -29,11 +29,11 @@ def main():
         shutil.rmtree(dst)
     (dst / "Core").mkdir(parents=True)
 
-    # SameBoy headers include one another relatively. Copy the complete Core
-    # directory, but the PS2 Makefile compiles only the lean FILES list.
-    for p in core.iterdir():
-        if p.is_file():
-            shutil.copy2(p, dst / "Core" / p.name)
+    # SameBoy source files include assets from subdirectories such as
+    # Core/graphics/*.inc. Preserve the complete Core tree recursively;
+    # the PS2 Makefile still compiles only the lean FILES list above.
+    shutil.rmtree(dst / "Core")
+    shutil.copytree(core, dst / "Core")
 
     shutil.copy2(src / "LICENSE", dst / "LICENSE")
     (dst / ".aurora-sameboy-stage-v1").write_text(

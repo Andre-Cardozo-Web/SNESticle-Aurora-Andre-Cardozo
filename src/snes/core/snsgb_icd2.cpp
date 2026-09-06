@@ -32,6 +32,7 @@ void SNSGBICD2::Reset(ModelE eModel)
     m_uReadAddress = 0;
     m_uWriteBank = 0;
     m_nVCounter = 0;
+    m_uHCounter = 0;
 
     m_uJoypID = 3;
     m_bPreviousP15 = FALSE;
@@ -78,10 +79,8 @@ Uint8 SNSGBICD2::ReadDecoded(Uint32 d)
     if (d == 0x6000U) {
         /* ICD LY port exposes the real line rounded down to its 8-line
            tile row, including VBlank 144..153, ORed with writeBank. */
-        Uint8 ly8 = (m_nVCounter >= 0 && m_nVCounter < LCD_TOTAL_LINES)
-            ? (Uint8)(m_nVCounter & ~7) : (Uint8)0;
-        Uint8 value = (Uint8)(ly8 | (m_uWriteBank & 3U));
-        return value;
+        Uint8 ly8 = (Uint8)((Uint8)m_nVCounter & (Uint8)~7U);
+        return (Uint8)(ly8 | (m_uWriteBank & 3U));
     }
 
     if (d == 0x6002U) {
@@ -296,6 +295,45 @@ void SNSGBICD2::SubmitPacket(const Uint8 *pPacket)
     m_bPacketReady = TRUE;
 }
 
+/* AURORA_SGB_SAMEBOY_RUNTIME_CURE_V1_20260906
+ * Direct external-ICD raster contract used by bsnes+SameBoy:
+ * pixel shifts into current 2bpp tile row; H-reset advances line/bank;
+ * V-reset resets raster counters but preserves ring writeBank.
+ */
+void SNSGBICD2::PPUWrite(Uint8 uColor)
+{
+    Uint16 x = m_uHCounter++;
+    Uint8 y;
+    Uint32 off;
+    Uint8 *pBank;
+
+    if (x >= LCD_WIDTH)
+        return;
+
+    y = (Uint8)(m_nVCounter & 7);
+    off = (Uint32)y * 2U + ((Uint32)x >> 3) * 16U;
+    pBank = m_uOutput[m_uWriteBank & 3U];
+
+    pBank[off + 0U] =
+        (Uint8)((pBank[off + 0U] << 1) | ((uColor & 1U) ? 1U : 0U));
+    pBank[off + 1U] =
+        (Uint8)((pBank[off + 1U] << 1) | ((uColor & 2U) ? 1U : 0U));
+}
+
+void SNSGBICD2::PPUHReset()
+{
+    m_uHCounter = 0;
+    ++m_nVCounter;
+    if ((m_nVCounter & 7) == 0)
+        m_uWriteBank = (Uint8)((m_uWriteBank + 1U) & 3U);
+}
+
+void SNSGBICD2::PPUVReset()
+{
+    m_uHCounter = 0;
+    m_nVCounter = 0;
+}
+
 void SNSGBICD2::PushLCDScanline(Int32 nLine, const Uint8 *pShade2Bit)
 {
     Int32 tile, px;
@@ -377,6 +415,7 @@ Bool SNSGBICD2::SaveState(StateT *s) const
     s->readAddress = m_uReadAddress;
     s->writeBank = m_uWriteBank;
     s->vcounter = m_nVCounter;
+    s->hcounter = m_uHCounter;
     s->joypID = m_uJoypID;
     s->previousP15 = m_bPreviousP15;
     s->pulseLock = m_bPulseLock;
@@ -400,7 +439,7 @@ Bool SNSGBICD2::RestoreState(const StateT *s)
         s->readBank >= LCD_BANKS || s->writeBank >= LCD_BANKS ||
         s->readAddress >= LCD_BANK_BYTES || s->joypID >= 4 ||
         s->packetOffset >= PACKET_BYTES || s->bitOffset >= 8 ||
-        s->vcounter < 0 || s->vcounter >= LCD_TOTAL_LINES)
+        s->vcounter < 0 || s->vcounter > 255 || s->hcounter > 0xffffU)
         return FALSE;
 
     m_eModel = (ModelE)s->model;
@@ -411,6 +450,7 @@ Bool SNSGBICD2::RestoreState(const StateT *s)
     m_uReadAddress = (Uint16)s->readAddress;
     m_uWriteBank = (Uint8)s->writeBank;
     m_nVCounter = s->vcounter;
+    m_uHCounter = (Uint16)s->hcounter;
     m_uJoypID = (Uint8)s->joypID;
     m_bPreviousP15 = s->previousP15 ? TRUE : FALSE;
     m_bPulseLock = s->pulseLock ? TRUE : FALSE;

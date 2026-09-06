@@ -8,6 +8,7 @@ LIB         := $(BUILD_DIR)/libsameboy_gb_ps2.a
 STAGE_STAMP := $(STAGE_DIR)/.aurora-sameboy-stage-v1
 PREPARE     := $(ROOT)/tools/prepare_sameboy_sgb_sources.py
 COMPAT_SRC  := $(ROOT)/tools/sameboy_ps2_compat.c
+COMPAT_HDR  := $(ROOT)/tools/sameboy_ps2_compat.h
 
 PS2DEV ?= $(shell if [ -n "$$PREFIX" ]; then printf "%s/opt/ps2dev" "$$PREFIX"; else printf "%s/.local/ps2dev" "$$HOME"; fi)
 
@@ -24,6 +25,7 @@ endif
 PYTHON ?= python3
 
 DEFS := \
+	-D_GNU_SOURCE \
 	-DGB_INTERNAL \
 	-DGB_DISABLE_TIMEKEEPING \
 	-DGB_DISABLE_REWIND \
@@ -34,10 +36,10 @@ DEFS := \
 	-Dvasprintf=aurora_sameboy_vasprintf \
 	-Dasprintf=aurora_sameboy_asprintf
 
-CFLAGS ?= -O2 -G0
+CFLAGS ?= -O3 -G0 -fomit-frame-pointer -finline-functions -ffast-math
 CFLAGS += -std=gnu11 -ffunction-sections -fdata-sections -fno-strict-aliasing \
-	-Wno-unused-parameter -Wno-missing-field-initializers $(DEFS) \
-	-I$(STAGE_DIR)/Core
+	-Wno-unused-parameter -Wno-missing-field-initializers -Wno-multichar $(DEFS) \
+	-I$(STAGE_DIR)/Core -I$(ROOT)/tools -include $(COMPAT_HDR)
 
 CORE_SRC := \
 	Core/gb.c \
@@ -73,12 +75,12 @@ $(STAGE_STAMP): $(PREPARE) $(CORE_DEPS)
 	@$(PYTHON) "$(PREPARE)" --source "$(SAMEBOY_DIR)" --stage "$(STAGE_DIR)"
 	@test -f "$@"
 
-$(OBJ_DIR)/Core/%.o: $(STAGE_STAMP)
+$(OBJ_DIR)/Core/%.o: $(STAGE_STAMP) $(COMPAT_HDR)
 	@mkdir -p "$(dir $@)"
 	@echo "[SameBoy] CC $(STAGE_DIR)/Core/$*.c"
 	@$(CC) $(CFLAGS) -c "$(STAGE_DIR)/Core/$*.c" -o "$@"
 
-$(COMPAT_OBJ): $(COMPAT_SRC)
+$(COMPAT_OBJ): $(COMPAT_SRC) $(COMPAT_HDR)
 	@mkdir -p "$(dir $@)"
 	@echo "[SameBoy] CC $(COMPAT_SRC)"
 	@$(CC) $(CFLAGS) -c "$(COMPAT_SRC)" -o "$@"

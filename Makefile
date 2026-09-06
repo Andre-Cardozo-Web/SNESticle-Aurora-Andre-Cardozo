@@ -1106,21 +1106,22 @@ fceumm-fds-clean:
 # AURORA_FCEUMM_FDS_V0_6_RULES_END
 
 # AURORA_SGB_GBHOST_V0_3_RULES
-$(SAMEBOY_STAGE_STAMP): $(SAMEBOY_PREPARE_TOOL) $(SAMEBOY_DIR)/include/aurora-hooks.h $(SAMEBOY_DIR)/src/aurora-hooks.c $(SAMEBOY_DIR)/src/gb/io.c $(SAMEBOY_DIR)/src/gb/video.c $(SAMEBOY_DIR)/src/gb/renderers/software.c
-	@rm -rf "$(SAMEBOY_STAGE_DIR)"
-	@$(SAMEBOY_PYTHON) "$(SAMEBOY_PREPARE_TOOL)" --source "$(SAMEBOY_DIR)" --stage "$(SAMEBOY_STAGE_DIR)"
-	@test -f "$@"
-
-$(OBJ_DIR)/snes/core/gbhost.o: $(SAMEBOY_STAGE_STAMP)
+# AURORA_SGB_SAMEBOY_ROOT_RULES_V1_20260906
+#
+# The nested SameBoy make owns build/sameboy-src and its stage stamp.
+# The parent must not describe the retired mGBA hook files here.
+# GBHost includes the pinned SameBoy public Core headers directly.
+$(OBJ_DIR)/snes/core/gbhost.o: \
+	$(SAMEBOY_DIR)/Core/gb.h \
+	$(SAMEBOY_DIR)/Core/apu.h \
+	$(SAMEBOY_DIR)/Core/joypad.h \
+	$(SAMEBOY_DIR)/Core/save_state.h \
+	$(CURDIR)/src/snes/core/sameboy_sgb_boot.h
 
 .PHONY: FORCE_SAMEBOY_GB_INCREMENTAL
 FORCE_SAMEBOY_GB_INCREMENTAL:
 
-# AURORA_SGB_STAGE_SERIALIZE_V0_6_4_2_20260905
-# Serialize the shared staged tree before launching the nested SameBoy make.
-# gbhost.o already depends on the same stamp; this closes the parallel
-# rm-rf/copy race between the main make and tools/Makefile.sameboy-gb-ps2.
-$(SAMEBOY_LIB): FORCE_SAMEBOY_GB_INCREMENTAL $(SAMEBOY_STAGE_STAMP) $(SAMEBOY_PS2_MAKEFILE) $(SAMEBOY_PREPARE_TOOL)
+$(SAMEBOY_LIB): FORCE_SAMEBOY_GB_INCREMENTAL $(SAMEBOY_PS2_MAKEFILE) $(SAMEBOY_PREPARE_TOOL)
 	@printf '[ SameBoy GBHost ] checking staged PS2 core\n'
 	+@PATH="$(PS2DEV)/ee/bin:$(PS2DEV)/bin:$(PS2SDK)/bin:$$PATH" $(MAKE) --no-print-directory -f "$(SAMEBOY_PS2_MAKEFILE)" ROOT="$(CURDIR)" SAMEBOY_DIR="$(SAMEBOY_DIR)" BUILD_DIR="$(SAMEBOY_BUILD_DIR)" STAGE_DIR="$(SAMEBOY_STAGE_DIR)" CC="$(EE_CC)" AR="$(EE_AR)" all
 

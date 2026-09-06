@@ -17,8 +17,8 @@ public:
     enum { SERIALIZED_BYTES = 0x20000 };
 
     typedef Uint8 (*JoypHookT)(void *pContext, Bool bP14, Bool bP15, Bool bWrite);
-    typedef void (*ScanlineHookT)(void *pContext, Int32 y, const Uint8 *pShade160);
-    typedef void (*LineHookT)(void *pContext, Int32 y);
+    typedef void (*PixelHookT)(void *pContext, Uint8 uColor);
+    typedef void (*ResetHookT)(void *pContext);
 
     struct StateT
     {
@@ -64,8 +64,9 @@ public:
     Uint32 ReadAudioFrames(Int16 *pStereoInterleaved, Uint32 nFrames);
     void ClearAudio();
 
-    void SetHooks(JoypHookT pJoyp, ScanlineHookT pScanline,
-                  LineHookT pLine, void *pContext);
+    void SetHooks(JoypHookT pJoyp, PixelHookT pPixel,
+                  ResetHookT pHReset, ResetHookT pVReset,
+                  void *pContext);
 
     Bool SaveState(StateT *pState) const;
     Bool RestoreState(const StateT *pState);

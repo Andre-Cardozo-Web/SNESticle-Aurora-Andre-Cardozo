@@ -25,6 +25,7 @@ public:
         Uint32 magic, version, model, icdRevision;
         Uint32 control, packetReady, readBank, readAddress, writeBank;
         Int32 vcounter;
+        Uint32 hcounter;
         Uint32 joypID, previousP15, pulseLock, strobeLock, packetLock;
         Uint32 packetOffset, bitData, bitOffset, resetRequested;
         Uint8 controller[4];
@@ -49,7 +50,12 @@ public:
     Uint8 JoypWrite(Bool bP14, Bool bP15);
     void SubmitPacket(const Uint8 *pPacket);
 
-    /* EndLCDLine must also be called for vblank lines 144..153. */
+    /* Native SameBoy NO_SFC ICD raster contract. */
+    void PPUWrite(Uint8 uColor);
+    void PPUHReset();
+    void PPUVReset();
+
+    /* Legacy helpers retained for old source/state compatibility. */
     void PushLCDScanline(Int32 nLine, const Uint8 *pShade2Bit);
     void EndLCDLine(Int32 nLine);
 
@@ -69,7 +75,7 @@ public:
 
 private:
     static const Uint32 STATE_MAGIC = 0x32424753U; /* "SGB2" LE */
-    static const Uint32 STATE_VERSION = 2U;
+    static const Uint32 STATE_VERSION = 3U;
     static const Uint32 SGB2_OSC_HZ = 20971520U;
 
     ModelE m_eModel;
@@ -80,6 +86,7 @@ private:
     Uint16 m_uReadAddress;
     Uint8 m_uWriteBank;
     Int32 m_nVCounter;
+    Uint16 m_uHCounter;
 
     Uint8 m_uJoypID;
     Bool m_bPreviousP15, m_bPulseLock, m_bStrobeLock, m_bPacketLock;

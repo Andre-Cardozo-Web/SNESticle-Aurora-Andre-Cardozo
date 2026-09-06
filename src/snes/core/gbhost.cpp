@@ -40,14 +40,12 @@ struct GBHost::Impl
     Int64 clockCredit;
 
     JoypHookT joypHook;
-    ScanlineHookT scanlineHook;
-    LineHookT lineHook;
+    PixelHookT pixelHook;
+    ResetHookT hresetHook;
+    ResetHookT vresetHook;
     void *hookContext;
 
     Uint32 *screen;
-    Uint8 line[160];
-    Uint16 pixelX;
-    Uint16 pixelY;
 
     Int16 audio[AUDIO_FRAMES * 2U];
     Uint32 audioRead;
@@ -148,47 +146,25 @@ void GBHost::PixelThunk(void *pOpaque, Uint8 pixel)
     if (!p)
         return;
 
-    if (p->pixelY < 144U && p->pixelX < 160U)
-        p->line[p->pixelX] = pixel & 3U;
-
-    if (p->pixelX < 0xffffU)
-        ++p->pixelX;
+    /* AURORA_SGB_SAMEBOY_RUNTIME_CURE_V1_20260906
+     * SameBoy NO_SFC already emits the exact ICD color stream. Do not rebuild
+     * a synthetic scanline here; let SNSGBICD2 own hcounter/vcounter/banks. */
+    if (p->pixelHook)
+        p->pixelHook(p->hookContext, pixel & 3U);
 }
 
 void GBHost::HResetThunk(void *pOpaque)
 {
     Impl *p = (Impl *)pOpaque;
-    Uint16 y;
-
-    if (!p)
-        return;
-
-    y = p->pixelY;
-
-    if (y < 144U)
-    {
-        while (p->pixelX < 160U)
-            p->line[p->pixelX++] = 0U;
-
-        if (p->scanlineHook)
-            p->scanlineHook(p->hookContext, (Int32)y, p->line);
-    }
-
-    if (y < 154U && p->lineHook)
-        p->lineHook(p->hookContext, (Int32)y);
-
-    p->pixelX = 0;
-    if (p->pixelY < 153U)
-        ++p->pixelY;
+    if (p && p->hresetHook)
+        p->hresetHook(p->hookContext);
 }
 
 void GBHost::VResetThunk(void *pOpaque)
 {
     Impl *p = (Impl *)pOpaque;
-    if (!p)
-        return;
-    p->pixelX = 0;
-    p->pixelY = 0;
+    if (p && p->vresetHook)
+        p->vresetHook(p->hookContext);
 }
 
 void GBHost::SampleThunk(void *pOpaque, Int16 left, Int16 right)
@@ -300,8 +276,6 @@ Bool GBHost::LoadROM(const Uint8 *pData, Uint32 nBytes, ModelE eModel)
     m_p->romBytes = nBytes;
     m_p->romCRC = AuroraSameBoyCRC32(pData, nBytes);
     m_p->clockCredit = 0;
-    m_p->pixelX = 0;
-    m_p->pixelY = 0;
     m_p->audioRead = m_p->audioWrite = m_p->audioCount = 0;
     m_p->loaded = TRUE;
 
@@ -332,7 +306,6 @@ void GBHost::UnloadROM()
     m_p->romBytes = 0;
     m_p->romCRC = 0;
     m_p->clockCredit = 0;
-    m_p->pixelX = m_p->pixelY = 0;
     ClearAudio();
 }
 
@@ -349,7 +322,6 @@ void GBHost::Reset(ModelE eModel)
         GB_reset(&m_p->gb);
 
     m_p->clockCredit = 0;
-    m_p->pixelX = m_p->pixelY = 0;
     ClearAudio();
 }
 
@@ -516,15 +488,17 @@ void GBHost::ClearAudio()
 }
 
 void GBHost::SetHooks(
-    JoypHookT pJoyp, ScanlineHookT pScanline,
-    LineHookT pLine, void *pContext)
+    JoypHookT pJoyp, PixelHookT pPixel,
+    ResetHookT pHReset, ResetHookT pVReset,
+    void *pContext)
 {
     if (!m_p)
         return;
 
     m_p->joypHook = pJoyp;
-    m_p->scanlineHook = pScanline;
-    m_p->lineHook = pLine;
+    m_p->pixelHook = pPixel;
+    m_p->hresetHook = pHReset;
+    m_p->vresetHook = pVReset;
     m_p->hookContext = pContext;
 }
 
@@ -566,7 +540,6 @@ Bool GBHost::RestoreState(const StateT *pState)
 
     m_p->model = pState->Model == MODEL_SGB2 ? MODEL_SGB2 : MODEL_SGB1;
     m_p->clockCredit = pState->ClockCredit;
-    m_p->pixelX = m_p->pixelY = 0;
     ClearAudio();
     return TRUE;
 }
