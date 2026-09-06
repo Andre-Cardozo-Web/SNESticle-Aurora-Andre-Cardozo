@@ -3241,22 +3241,11 @@ static void _MainLoopSgbBootTrace(const Char *pText)
 {
     if (!pText)
         return;
-    /* AURORA_SGB_RUNTIME_SAFE_TRACE_V0_6_9_20260905
-     * This helper is also reached by mGBA reset/video callbacks while the
-     * SNES CPU is inside an ICD2 MMIO write. Rendering the whole frontend
-     * recursively from that call stack is unsafe. Leave the status/console
-     * message queued for the normal frontend render instead. */
-    /* AURORA_SGB_HANDSHAKE_TRACE_V0_6_10_20260905
-     * Deep R/K/I/L/V boot traces remain on ConPrint, but only compact H
-     * protocol diagnostics own the on-screen status during runtime. */
-    /* AURORA_SGB_STICKY_FB_RESULT_V0_6_13_1_20260905
-     * H77-H79 are low-level sync diagnostics. Keep them in ConPrint only so
-     * they cannot overwrite the decisive H88-H94 result on the one-line UI. */
-    if (!strncmp(pText, "SGB H", 5) &&
-        strncmp(pText, "SGB H77:", 8) &&
-        strncmp(pText, "SGB H78:", 8) &&
-        strncmp(pText, "SGB H79:", 8))
-        MainLoopStatusPrintf(60 * 30, "%s", pText);
+
+    /* AURORA_SGB_PUBLIC_OSD_V1_3_20260906
+     * Public build: SGB breadcrumbs (Hxx, 4x, SBx and related diagnostics)
+     * remain in ConPrint only and never replace the normal frontend status.
+     * "Loading BIOS and ROM" remains the sole user-facing SGB loading line. */
     ConPrint("%s\n", pText);
 }
 

@@ -56,15 +56,19 @@ Aurora also contains or integrates InfoNES, miniz, libxmp-lite, PS2SDK-related l
 <!-- AURORA_SAMEBOY_LICENSE_V1_20260906 -->
 ### SameBoy (Game Boy core for Super Game Boy)
 
+SameBoy is developed by **Lior Halphon and contributors**.
+
 Aurora integrates the pinned [`itsveenee/SameBoy`](https://github.com/itsveenee/SameBoy)
 Git submodule at `src/third_party/sameboy` as the Game Boy CPU/PPU/APU/MBC
 backend for the Super Game Boy ICD2 bridge. Aurora uses SameBoy's dedicated
 `GB_MODEL_SGB_NO_SFC` / `GB_MODEL_SGB2_NO_SFC` integration mode so the SNES
 and ICD2 remain emulated by Aurora while SameBoy supplies the Game Boy side.
 
-SameBoy is distributed under the Expat License. Preserve the original
-source-file notices and `src/third_party/sameboy/LICENSE`; a verbatim mirror is
-included at `LICENSES/SameBoy-Expat.txt`.
+SameBoy is distributed under the Expat License. The integrated `Core/` and
+`BootROMs/` paths are outside SameBoy's `iOS` and `HexFiend` exceptions and
+are covered by that Expat grant. Preserve the original source-file notices and
+`src/third_party/sameboy/LICENSE`; a verbatim mirror is included at
+`LICENSES/SameBoy-Expat.txt`.
 
 Aurora uses the open SameBoy SGB bootstrap for the SGB/SGB2 startup path.
 Nintendo boot ROM firmware is not embedded by this integration.

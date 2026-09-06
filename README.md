@@ -14,8 +14,13 @@ PC Engine / TurboGrafx-16 emulation through **Beetle PC Engine Fast** is based o
 Super Game Boy emulation uses [**SameBoy**](https://github.com/itsveenee/SameBoy) by **Lior Halphon** as the embedded Game Boy backend, through SameBoy's dedicated external-SFC (`SGB_NO_SFC`) interface. Aurora continues to emulate the SNES and ICD2 side. The integration is experimental. See [THIRD_PARTY.md](THIRD_PARTY.md) and `LICENSES/SameBoy-Expat.txt`.
 
 
-<!-- AURORA_SGB_MGBA_README_V1_20260906 -->
-Super Game Boy support is currently **in development**. Aurora uses the pinned `itsveenee/SameBoy` submodule for the Game Boy/SM83 side of its `GBHost` + ICD2 bridge, with SGB1/SGB2 integration handled by the SNES side of Aurora. This work is experimental and is not documented here as complete or compatibility-final. SameBoy remains under the MPL-2.0; see [THIRD_PARTY.md](THIRD_PARTY.md) and `LICENSES/SameBoy-MPL-2.0.txt`.
+<!-- AURORA_SGB_SAMEBOY_README_V2_20260906 -->
+Super Game Boy support is currently **in development**. Aurora uses the pinned
+`itsveenee/SameBoy` submodule for the Game Boy CPU/PPU/APU/MBC side of the
+`GBHost` + ICD2 bridge. SameBoy is by **Lior Halphon and contributors** and is
+distributed under the **Expat License**. See [THIRD_PARTY.md](THIRD_PARTY.md)
+and `LICENSES/SameBoy-Expat.txt`.
+
 <!-- AURORA_FCEUMM_FDS_CHECKPOINT_V1 -->
 <!-- AURORA_FCEUMM_FDS_DOCS_V8_1_20260827 -->
 
