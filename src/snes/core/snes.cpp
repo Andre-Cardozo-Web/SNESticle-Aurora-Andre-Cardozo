@@ -2860,6 +2860,17 @@ void SnesSystem::SyncSuperGameBoy()
 Uint8 SNCPU_TRAPFUNC SnesSystem::ReadSGB(SNCpuT *pCpu, Uint32 uAddr)
 {
     SnesSystem *pSnes = (SnesSystem *)pCpu->pUserData;
+
+    /* AURORA_SGB_MMIO_SYNC_ORDERED_V0_6_31_20260906
+     * Poll/data ports are synchronized to the current S-CPU timestamp.
+     * The boot packet window $7000-$700f is deliberately excluded:
+     * consuming FB is itself part of the handshake and must happen before
+     * any GB-side advancement caused by this same MMIO read. */
+    {
+        Uint32 d = uAddr & 0x40f80fU;
+        if (!(d >= 0x7000U && d <= 0x700fU))
+            pSnes->SyncSuperGameBoy();
+    }
     if (!pSnes) return pCpu->uMDR;
     pSnes->SyncSuperGameBoy();
     return pSnes->m_SGB.Read(uAddr, pCpu->uMDR);
@@ -2868,6 +2879,14 @@ Uint8 SNCPU_TRAPFUNC SnesSystem::ReadSGB(SNCpuT *pCpu, Uint32 uAddr)
 void SNCPU_TRAPFUNC SnesSystem::WriteSGB(SNCpuT *pCpu, Uint32 uAddr, Uint8 uData)
 {
     SnesSystem *pSnes = (SnesSystem *)pCpu->pUserData;
+
+    /* AURORA_SGB_MMIO_SYNC_V0_6_30_20260906_WRITE
+     * ICD2 is asynchronous hardware. Bring the GB side up to the
+     * current S-CPU master-clock position at the MMIO boundary so
+     * tight firmware polling cannot phase-lock on a stale $6000,
+     * $6002 or $7800 value. This is SGB-only and does not alter the
+     * ordinary 65816 executor or non-SGB cartridges. */
+    pSnes->SyncSuperGameBoy();
     if (!pSnes) return;
     pSnes->SyncSuperGameBoy();
     pSnes->m_SGB.Write(uAddr, uData);

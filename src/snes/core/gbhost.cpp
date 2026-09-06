@@ -1,541 +1,572 @@
 #include <string.h>
 #include <new>
+
 #include "gbhost.h"
-
-/* AURORA_SGB_ATTACH_TRACE_V0_6_3_20260905 */
-extern "C" void AuroraSgbBootTrace(const char *pText);
-
-/* AURORA_SGB_RUNTIME_V0_4_20260904 */
+#include "sameboy_sgb_boot.h"
 
 extern "C" {
-#include <mgba/core/cpu.h>
-#include <mgba/core/timing.h>
-#include <mgba/internal/gb/gb.h>
-#include <mgba/internal/gb/mbc.h>
-#include <mgba/internal/gb/serialize.h>
-#include <mgba/internal/gb/video.h>
-#include <mgba/internal/gb/renderers/software.h>
-#include <mgba/internal/sm83/sm83.h>
-#include <mgba-util/vfs.h>
-#include <mgba-util/audio-buffer.h>
-#include "aurora-hooks.h"
+#include "../../third_party/sameboy/Core/gb.h"
 }
 
-typedef char GBHostSerializedSizeCheck[
-    sizeof(struct GBSerializedState) == GBHost::SERIALIZED_BYTES ? 1 : -1
-];
+extern "C" void AuroraSgbBootTrace(const char *pText);
+
+static const Uint32 GBHOST_STATE_MAGIC = 0x42534753U; /* "SGSB" LE */
+static const Uint32 GBHOST_STATE_VERSION = 1U;
+static const Uint32 AUDIO_FRAMES = 4096U;
+
+static Uint32 AuroraSameBoyCRC32(const Uint8 *pData, Uint32 nBytes)
+{
+    Uint32 crc = 0xffffffffU;
+    Uint32 i, b;
+    for (i = 0; i < nBytes; ++i)
+    {
+        crc ^= pData[i];
+        for (b = 0; b < 8; ++b)
+            crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+    }
+    return ~crc;
+}
 
 struct GBHost::Impl
 {
-    struct GB gb;
-    struct SM83Core cpu;
-    struct GBVideoSoftwareRenderer renderer;
-    struct mCPUComponent *components[CPU_COMPONENT_MAX];
-    mColor frame[GB_VIDEO_HORIZONTAL_PIXELS * GB_VIDEO_VERTICAL_PIXELS];
-    Uint8 keys;
-    ModelE model;
-    Int64 clockCredit;
+    GB_gameboy_t gb;
+    Bool gbInited;
     Bool initialized;
     Bool loaded;
+    ModelE model;
+
+    Uint32 romBytes;
+    Uint32 romCRC;
+    Int64 clockCredit;
+
     JoypHookT joypHook;
     ScanlineHookT scanlineHook;
     LineHookT lineHook;
     void *hookContext;
+
+    Uint32 *screen;
+    Uint8 line[160];
+    Uint16 pixelX;
+    Uint16 pixelY;
+
+    Int16 audio[AUDIO_FRAMES * 2U];
+    Uint32 audioRead;
+    Uint32 audioWrite;
+    Uint32 audioCount;
 };
+
+static GB_model_t AuroraSameBoyModel(GBHost::ModelE model)
+{
+    return model == GBHost::MODEL_SGB2
+        ? GB_MODEL_SGB2_NO_SFC
+        : GB_MODEL_SGB_NO_SFC;
+}
 
 GBHost::GBHost() : m_p(NULL) {}
 GBHost::~GBHost() { Shutdown(); }
 
 Bool GBHost::Init()
 {
-    if (m_p && m_p->initialized) return TRUE;
-    if (m_p) Shutdown();
+    if (m_p && m_p->initialized)
+        return TRUE;
 
-    AuroraSgbBootTrace("SGB 4C1: alloc GBHost");
+    if (m_p)
+        Shutdown();
+
     m_p = new (std::nothrow) Impl;
-    if (!m_p) return FALSE;
+    if (!m_p)
+        return FALSE;
+
     memset(m_p, 0, sizeof(*m_p));
-
-    AuroraSgbBootTrace("SGB 4C2: GBCreate");
-    GBCreate(&m_p->gb);
-
-    AuroraSgbBootTrace("SGB 4C3: SM83 setup");
-    SM83SetComponents(&m_p->cpu, &m_p->gb.d, CPU_COMPONENT_MAX, m_p->components);
-
-    AuroraSgbBootTrace("SGB 4C4: SM83 init");
-    SM83Init(&m_p->cpu);
-
-    AuroraSgbBootTrace("SGB 4C5: renderer");
-    GBVideoSoftwareRendererCreate(&m_p->renderer);
-    m_p->renderer.outputBuffer = m_p->frame;
-    m_p->renderer.outputBufferStride = GB_VIDEO_HORIZONTAL_PIXELS;
-
-    /* AURORA_SGB_DISABLE_MGBA_BORDER_V0_6_8_20260905
-     * mGBA is only the embedded 160x144 GB engine here. The real SGB border
-     * belongs to the SNES firmware/ICD2 path. Leaving mGBA sgbBorders enabled
-     * lets its software renderer regenerate a 256x224 border into our 160x144
-     * output buffer when LCDC/palette 0 is initialized. */
-    m_p->gb.video.sgbBorders = false;
-
-    GBVideoAssociateRenderer(&m_p->gb.video, &m_p->renderer.d);
-
-    m_p->keys = 0;
-    m_p->gb.keySource = &m_p->keys;
     m_p->model = MODEL_SGB1;
     m_p->initialized = TRUE;
-    mGBAAuroraSetHooks(NULL, NULL, NULL, NULL);
-    AuroraSgbBootTrace("SGB 4C6: init ready");
+    AuroraSgbBootTrace("SGB SB1: SameBoy host ready");
     return TRUE;
 }
 
 void GBHost::Shutdown()
 {
-    if (!m_p) return;
-    mGBAAuroraSetHooks(NULL, NULL, NULL, NULL);
-    if (m_p->initialized) {
-        SM83Deinit(&m_p->cpu);
-        GBDestroy(&m_p->gb);
+    if (!m_p)
+        return;
+
+    if (m_p->gbInited)
+    {
+        GB_free(&m_p->gb);
+        m_p->gbInited = FALSE;
     }
+
+    delete [] m_p->screen;
+    m_p->screen = NULL;
     delete m_p;
     m_p = NULL;
 }
 
-Bool GBHost::IsInitialized() const { return m_p && m_p->initialized ? TRUE : FALSE; }
-Bool GBHost::IsLoaded() const { return m_p && m_p->loaded ? TRUE : FALSE; }
+Bool GBHost::IsInitialized() const
+{
+    return m_p && m_p->initialized ? TRUE : FALSE;
+}
+
+Bool GBHost::IsLoaded() const
+{
+    return m_p && m_p->loaded ? TRUE : FALSE;
+}
+
+void GBHost::BootRomThunk(void *pOpaque, Int32 eBootType)
+{
+    Impl *p = (Impl *)pOpaque;
+    Uint8 boot[256];
+
+    if (!p || !p->gbInited)
+        return;
+
+    memcpy(boot, g_AuroraSameBoySgbBoot, sizeof(boot));
+    boot[253] = (eBootType == (Int32)GB_BOOT_ROM_SGB2) ? 0xffU : 0x01U;
+    GB_load_boot_rom_from_buffer(&p->gb, boot, sizeof(boot));
+}
+
+void GBHost::JoypThunk(void *pOpaque, Uint8 value)
+{
+    Impl *p = (Impl *)pOpaque;
+    Uint8 input = 0x0fU;
+    Bool p14, p15;
+
+    if (!p || !p->gbInited)
+        return;
+
+    p14 = (value & 0x10U) ? TRUE : FALSE;
+    p15 = (value & 0x20U) ? TRUE : FALSE;
+
+    if (p->joypHook)
+        input = p->joypHook(p->hookContext, p14, p15, TRUE) & 0x0fU;
+
+    GB_icd_set_joyp(&p->gb, input);
+}
+
+void GBHost::PixelThunk(void *pOpaque, Uint8 pixel)
+{
+    Impl *p = (Impl *)pOpaque;
+    if (!p)
+        return;
+
+    if (p->pixelY < 144U && p->pixelX < 160U)
+        p->line[p->pixelX] = pixel & 3U;
+
+    if (p->pixelX < 0xffffU)
+        ++p->pixelX;
+}
+
+void GBHost::HResetThunk(void *pOpaque)
+{
+    Impl *p = (Impl *)pOpaque;
+    Uint16 y;
+
+    if (!p)
+        return;
+
+    y = p->pixelY;
+
+    if (y < 144U)
+    {
+        while (p->pixelX < 160U)
+            p->line[p->pixelX++] = 0U;
+
+        if (p->scanlineHook)
+            p->scanlineHook(p->hookContext, (Int32)y, p->line);
+    }
+
+    if (y < 154U && p->lineHook)
+        p->lineHook(p->hookContext, (Int32)y);
+
+    p->pixelX = 0;
+    if (p->pixelY < 153U)
+        ++p->pixelY;
+}
+
+void GBHost::VResetThunk(void *pOpaque)
+{
+    Impl *p = (Impl *)pOpaque;
+    if (!p)
+        return;
+    p->pixelX = 0;
+    p->pixelY = 0;
+}
+
+void GBHost::SampleThunk(void *pOpaque, Int16 left, Int16 right)
+{
+    Impl *p = (Impl *)pOpaque;
+    Uint32 w;
+
+    if (!p)
+        return;
+
+    if (p->audioCount >= AUDIO_FRAMES)
+    {
+        p->audioRead = (p->audioRead + 1U) & (AUDIO_FRAMES - 1U);
+        --p->audioCount;
+    }
+
+    w = p->audioWrite;
+    p->audio[w * 2U + 0U] = left;
+    p->audio[w * 2U + 1U] = right;
+    p->audioWrite = (w + 1U) & (AUDIO_FRAMES - 1U);
+    ++p->audioCount;
+}
+
+static void AuroraSameBoyBootCallback(GB_gameboy_t *gb, GB_boot_rom_t type)
+{
+    GBHost::BootRomThunk(GB_get_user_data(gb), (Int32)type);
+}
+
+static void AuroraSameBoyJoypCallback(GB_gameboy_t *gb, uint8_t value)
+{
+    GBHost::JoypThunk(GB_get_user_data(gb), (Uint8)value);
+}
+
+static void AuroraSameBoyPixelCallback(GB_gameboy_t *gb, uint8_t pixel)
+{
+    GBHost::PixelThunk(GB_get_user_data(gb), (Uint8)pixel);
+}
+
+static void AuroraSameBoyHResetCallback(GB_gameboy_t *gb)
+{
+    GBHost::HResetThunk(GB_get_user_data(gb));
+}
+
+static void AuroraSameBoyVResetCallback(GB_gameboy_t *gb)
+{
+    GBHost::VResetThunk(GB_get_user_data(gb));
+}
+
+static void AuroraSameBoySampleCallback(GB_gameboy_t *gb, GB_sample_t *sample)
+{
+    GBHost::SampleThunk(
+        GB_get_user_data(gb), (Int16)sample->left, (Int16)sample->right);
+}
+
+Bool GBHost::LoadROM(const Uint8 *pData, Uint32 nBytes, ModelE eModel)
+{
+    GB_model_t model;
+    Uint8 boot[256];
+
+    if (!pData || nBytes < 0x150U)
+        return FALSE;
+
+    if (!Init())
+        return FALSE;
+
+    if (m_p->gbInited)
+    {
+        GB_free(&m_p->gb);
+        m_p->gbInited = FALSE;
+    }
+    delete [] m_p->screen;
+    m_p->screen = NULL;
+
+    memset(&m_p->gb, 0, sizeof(m_p->gb));
+    m_p->model = (eModel == MODEL_SGB2) ? MODEL_SGB2 : MODEL_SGB1;
+    model = AuroraSameBoyModel(m_p->model);
+
+    GB_init(&m_p->gb, model);
+    m_p->gbInited = TRUE;
+    GB_set_user_data(&m_p->gb, m_p);
+
+    GB_set_boot_rom_load_callback(&m_p->gb, AuroraSameBoyBootCallback);
+    GB_set_joyp_write_callback(&m_p->gb, AuroraSameBoyJoypCallback);
+    GB_set_icd_pixel_callback(&m_p->gb, AuroraSameBoyPixelCallback);
+    GB_set_icd_hreset_callback(&m_p->gb, AuroraSameBoyHResetCallback);
+    GB_set_icd_vreset_callback(&m_p->gb, AuroraSameBoyVResetCallback);
+    GB_apu_set_sample_callback(&m_p->gb, AuroraSameBoySampleCallback);
+
+    GB_set_sample_rate_by_clocks(&m_p->gb, 256.0);
+    GB_set_highpass_filter_mode(&m_p->gb, GB_HIGHPASS_ACCURATE);
+    GB_set_border_mode(&m_p->gb, GB_BORDER_NEVER);
+
+    m_p->screen = new (std::nothrow) Uint32[160U * 144U];
+    if (!m_p->screen)
+    {
+        GB_free(&m_p->gb);
+        m_p->gbInited = FALSE;
+        return FALSE;
+    }
+    memset(m_p->screen, 0, sizeof(Uint32) * 160U * 144U);
+    GB_set_pixels_output(&m_p->gb, m_p->screen);
+
+    GB_load_rom_from_buffer(&m_p->gb, pData, (size_t)nBytes);
+
+    memcpy(boot, g_AuroraSameBoySgbBoot, sizeof(boot));
+    boot[253] = (m_p->model == MODEL_SGB2) ? 0xffU : 0x01U;
+    GB_load_boot_rom_from_buffer(&m_p->gb, boot, sizeof(boot));
+
+    m_p->romBytes = nBytes;
+    m_p->romCRC = AuroraSameBoyCRC32(pData, nBytes);
+    m_p->clockCredit = 0;
+    m_p->pixelX = 0;
+    m_p->pixelY = 0;
+    m_p->audioRead = m_p->audioWrite = m_p->audioCount = 0;
+    m_p->loaded = TRUE;
+
+    GB_reset(&m_p->gb);
+
+    AuroraSgbBootTrace(
+        m_p->model == MODEL_SGB2
+            ? "SGB SB2: SameBoy SGB2 NO_SFC boot"
+            : "SGB SB2: SameBoy SGB1 NO_SFC boot");
+    return TRUE;
+}
 
 void GBHost::UnloadROM()
 {
-    if (!m_p || !m_p->initialized || !m_p->loaded) return;
-    GBUnloadROM(&m_p->gb);
-    m_p->loaded = FALSE;
-    m_p->clockCredit = 0;
-}
+    if (!m_p || !m_p->initialized)
+        return;
 
-/* AURORA_SGB_RESET_ONCE_V0_6_1_20260904: SM83Reset already dispatches GBReset. */
-Bool GBHost::LoadROM(const Uint8 *pData, Uint32 nBytes, ModelE eModel)
-{
-    struct VFile *pRom;
-    if (!pData || nBytes < 0x150U) return FALSE;
-
-    AuroraSgbBootTrace("SGB 4D1: ensure init");
-    if (!Init()) return FALSE;
-
-    if (m_p->loaded) {
-        AuroraSgbBootTrace("SGB 4D2: unload old ROM");
-        UnloadROM();
-    }
-
-    AuroraSgbBootTrace("SGB 4D3: copy ROM VFile");
-    pRom = VFileMemChunk(pData, (size_t)nBytes);
-    if (!pRom) return FALSE;
-
-    AuroraSgbBootTrace("SGB 4D4: GBLoadROM");
-    if (!GBLoadROM(&m_p->gb, pRom)) {
-        GBUnloadROM(&m_p->gb);
-        return FALSE;
-    }
-
-    AuroraSgbBootTrace("SGB 4D5: ROM loaded");
-    m_p->model = (eModel == MODEL_SGB2) ? MODEL_SGB2 : MODEL_SGB1;
-    m_p->gb.model = (m_p->model == MODEL_SGB2) ? GB_MODEL_SGB2 : GB_MODEL_SGB;
-    m_p->clockCredit = 0;
-    m_p->loaded = TRUE;
-
-    AuroraSgbBootTrace("SGB 4D6: SM83 reset");
-    /* SM83Reset dispatches GBReset through irqh.reset; do it once. */
-    SM83Reset(&m_p->cpu);
-    /* AURORA_SGB_SCHEDULER_PRIME_V0_6_18_20260905
-     * SM83Reset sets nextEvent=0 before GBReset rebuilds mTiming.
-     * Publish the actual first queued deadline afterwards. This
-     * executes/skips no event; it only repairs the stale deadline. */
-    /* AURORA_SGB_ABSOLUTE_DEADLINE_PRIME_V0_6_19_20260905
-     * mTimingNextEvent() returns a DELTA from the current relative
-     * cycle position. cpu.nextEvent is an absolute threshold in that
-     * same relative-cycle coordinate, so add cpu.cycles here.
-     * When GBProcessEvents calls mTimingNextEvent internally it has
-     * already zeroed cpu.cycles, which is why the raw delta is valid
-     * there but was wrong in our post-reset prime. */
+    if (m_p->gbInited)
     {
-        Int32 delta = mTimingNextEvent(&m_p->gb.timing);
-        m_p->cpu.nextEvent = (delta == INT_MAX)
-            ? INT_MAX
-            : (m_p->cpu.cycles + delta);
+        GB_free(&m_p->gb);
+        m_p->gbInited = FALSE;
     }
 
-    AuroraSgbBootTrace("SGB 4D7: reset returned");
-    return TRUE;
+    delete [] m_p->screen;
+    m_p->screen = NULL;
+
+    m_p->loaded = FALSE;
+    m_p->romBytes = 0;
+    m_p->romCRC = 0;
+    m_p->clockCredit = 0;
+    m_p->pixelX = m_p->pixelY = 0;
+    ClearAudio();
 }
 
 void GBHost::Reset(ModelE eModel)
 {
-    if (!m_p || !m_p->initialized || !m_p->loaded) return;
+    if (!m_p || !m_p->loaded || !m_p->gbInited)
+        return;
+
     m_p->model = (eModel == MODEL_SGB2) ? MODEL_SGB2 : MODEL_SGB1;
-    m_p->gb.model = (m_p->model == MODEL_SGB2) ? GB_MODEL_SGB2 : GB_MODEL_SGB;
+
+    if (GB_get_model(&m_p->gb) != AuroraSameBoyModel(m_p->model))
+        GB_switch_model_and_reset(&m_p->gb, AuroraSameBoyModel(m_p->model));
+    else
+        GB_reset(&m_p->gb);
+
     m_p->clockCredit = 0;
-    SM83Reset(&m_p->cpu);
-    /* AURORA_SGB_SCHEDULER_PRIME_V0_6_18_20260905
-     * SM83Reset sets nextEvent=0 before GBReset rebuilds mTiming.
-     * Publish the actual first queued deadline afterwards. This
-     * executes/skips no event; it only repairs the stale deadline. */
-    /* AURORA_SGB_ABSOLUTE_DEADLINE_PRIME_V0_6_19_20260905
-     * mTimingNextEvent() returns a DELTA from the current relative
-     * cycle position. cpu.nextEvent is an absolute threshold in that
-     * same relative-cycle coordinate, so add cpu.cycles here.
-     * When GBProcessEvents calls mTimingNextEvent internally it has
-     * already zeroed cpu.cycles, which is why the raw delta is valid
-     * there but was wrong in our post-reset prime. */
-    {
-        Int32 delta = mTimingNextEvent(&m_p->gb.timing);
-        m_p->cpu.nextEvent = (delta == INT_MAX)
-            ? INT_MAX
-            : (m_p->cpu.cycles + delta);
-    }
+    m_p->pixelX = m_p->pixelY = 0;
+    ClearAudio();
 }
 
 Bool GBHost::AttachSavedata(const Uint8 *pData, Uint32 nBytes)
 {
-    struct VFile *pSave;
-    if (!m_p || !m_p->initialized || !m_p->loaded || (nBytes && !pData)) return FALSE;
-    pSave = VFileMemChunk(pData, (size_t)nBytes);
-    if (!pSave) return FALSE;
-    if (!GBLoadSave(&m_p->gb, pSave)) {
-        pSave->close(pSave);
+    if (!m_p || !m_p->loaded || !m_p->gbInited || (nBytes && !pData))
         return FALSE;
-    }
-    return TRUE;
-}
 
-void GBHost::SyncSavedataFooter()
-{
-    if (!m_p || !m_p->loaded || !m_p->gb.sramVf) return;
-    switch (m_p->gb.memory.mbcType) {
-        case GB_MBC3_RTC: GBMBCRTCWrite(&m_p->gb); break;
-        case GB_HuC3:     GBMBCHuC3Write(&m_p->gb); break;
-        case GB_TAMA5:    GBMBCTAMA5Write(&m_p->gb); break;
-        default: break;
-    }
-    if (m_p->gb.memory.sram && m_p->gb.sramSize)
-        (void)m_p->gb.sramVf->sync(m_p->gb.sramVf, m_p->gb.memory.sram, m_p->gb.sramSize);
+    if (nBytes)
+        GB_load_battery_from_buffer(&m_p->gb, pData, (size_t)nBytes);
+
+    GB_clear_battery_dirty(&m_p->gb);
+    return TRUE;
 }
 
 Uint32 GBHost::GetSavedataBytes()
 {
-    ssize_t n;
-    if (!m_p || !m_p->loaded || !m_p->gb.sramVf) return 0;
-    SyncSavedataFooter();
-    n = m_p->gb.sramVf->size(m_p->gb.sramVf);
-    return n > 0 && (Uint64)n <= 0xffffffffULL ? (Uint32)n : 0;
+    int n;
+    if (!m_p || !m_p->loaded || !m_p->gbInited)
+        return 0;
+    n = GB_save_battery_size(&m_p->gb);
+    return n > 0 ? (Uint32)n : 0;
 }
 
-Bool GBHost::ExportSavedata(Uint8 *pData, Uint32 nCapacity, Uint32 *pActualBytes)
+Bool GBHost::ExportSavedata(
+    Uint8 *pData, Uint32 nCapacity, Uint32 *pActualBytes)
 {
-    ssize_t n, got;
-    if (pActualBytes) *pActualBytes = 0;
-    if (!m_p || !m_p->loaded || !m_p->gb.sramVf) return FALSE;
-    SyncSavedataFooter();
-    n = m_p->gb.sramVf->size(m_p->gb.sramVf);
-    if (n < 0 || (Uint64)n > 0xffffffffULL) return FALSE;
-    if (pActualBytes) *pActualBytes = (Uint32)n;
-    if (!n) return TRUE;
-    if (!pData || nCapacity < (Uint32)n) return FALSE;
-    if (m_p->gb.sramVf->seek(m_p->gb.sramVf, 0, SEEK_SET) < 0) return FALSE;
-    got = m_p->gb.sramVf->read(m_p->gb.sramVf, pData, (size_t)n);
-    return got == n ? TRUE : FALSE;
-}
+    int n;
 
-Bool GBHost::SavedataDirty() const { return m_p && m_p->loaded && m_p->gb.sramDirty ? TRUE : FALSE; }
-void GBHost::ClearSavedataDirty() { if (m_p) { m_p->gb.sramDirty = 0; m_p->gb.sramDirtAge = 0; } }
+    if (pActualBytes)
+        *pActualBytes = 0;
 
-/* AURORA_SGB_PRE_EVENT_HARD_PROBE_V0_6_17_20260905
- * Snapshot immediately before the public SM83Tick event pump.
- * Bits:
- *  0: cpu.cycles >= cpu.nextEvent (SM83Tick enters processEvents first)
- *  1: GB cpuBlocked already set
- *  2: GB earlyExit already set
- *  3: timing queue has no root/reroot event
- *  4: cpu.nextEvent is negative
- * 31: host invalid/unloaded
- */
-/* AURORA_SGB_DUE_EVENT_IDENTITY_PROBE_V0_6_20_20260905
- * Read-only scheduler introspection. No callback is executed here. */
-const char *GBHost::DebugPreEventName() const
-{
-    const struct mTimingEvent *ev;
-    if (!m_p || !m_p->loaded)
-        return NULL;
-
-    ev = m_p->gb.timing.root;
-    if (!ev)
-        ev = m_p->gb.timing.reroot;
-
-    if (!ev || !ev->name)
-        return NULL;
-    return ev->name;
-}
-
-Int32 GBHost::DebugPreEventDelta() const
-{
-    const struct mTimingEvent *ev;
-
-    if (!m_p || !m_p->loaded)
-        return INT_MAX;
-
-    ev = m_p->gb.timing.root;
-    if (!ev)
-        ev = m_p->gb.timing.reroot;
-
-    if (!ev)
-        return INT_MAX;
-
-    return (Int32)(
-        (Int64)ev->when
-        - (Int64)m_p->gb.timing.masterCycles
-        - (Int64)m_p->cpu.cycles
-    );
-}
-
-/* AURORA_SGB_SKIP_FIRST_AUDIO_EVENT_PROBE_V0_6_21_20260905
- * Diagnostic only:
- * - accept ONLY the exact GB Audio Sample timing event
- * - accept it ONLY while currently due
- * - do NOT execute its callback
- * - rearm it at the same normal interval used by mGBA _sample()
- * - republish cpu.nextEvent in the absolute cpu.cycles coordinate
- *
- * This skips one callback, not the audio subsystem. */
-Bool GBHost::DebugSkipDueAudioSample()
-{
-    struct mTimingEvent *ev;
-    Int64 due;
-    Int64 delay;
-    Int32 delta;
-
-    if (!m_p || !m_p->loaded)
+    if (!m_p || !m_p->loaded || !m_p->gbInited)
         return FALSE;
 
-    ev = m_p->gb.timing.root;
-    if (!ev)
-        ev = m_p->gb.timing.reroot;
-
-    if (ev != &m_p->gb.audio.sampleEvent)
+    n = GB_save_battery_size(&m_p->gb);
+    if (n < 0)
         return FALSE;
 
-    due =
-        (Int64)ev->when
-        - (Int64)m_p->gb.timing.masterCycles
-        - (Int64)m_p->cpu.cycles;
+    if (pActualBytes)
+        *pActualBytes = (Uint32)n;
 
-    if (due > 0)
+    if (!n)
+        return TRUE;
+
+    if (!pData || nCapacity < (Uint32)n)
         return FALSE;
 
-    delay =
-        (Int64)m_p->gb.audio.sampleInterval
-        * (Int64)m_p->gb.audio.timingFactor;
-
-    if (delay <= 0 || delay > 0x7fffffffLL)
-        return FALSE;
-
-    mTimingDeschedule(&m_p->gb.timing, &m_p->gb.audio.sampleEvent);
-    mTimingSchedule(
-        &m_p->gb.timing,
-        &m_p->gb.audio.sampleEvent,
-        (Int32)delay
-    );
-
-    delta = mTimingNextEvent(&m_p->gb.timing);
-    m_p->cpu.nextEvent = (delta == INT_MAX)
-        ? INT_MAX
-        : (m_p->cpu.cycles + delta);
-
-    return TRUE;
+    return GB_save_battery_to_buffer(&m_p->gb, pData, (size_t)n) == 0
+        ? TRUE : FALSE;
 }
 
-Uint32 GBHost::DebugPreTickState() const
+Bool GBHost::SavedataDirty() const
 {
-    Uint32 state = 0;
-    if (!m_p || !m_p->loaded)
-        return 0x80000000U;
-    if (m_p->cpu.cycles >= m_p->cpu.nextEvent) state |= 0x01U;
-    if (m_p->gb.cpuBlocked) state |= 0x02U;
-    if (m_p->gb.earlyExit) state |= 0x04U;
-    if (!m_p->gb.timing.root && !m_p->gb.timing.reroot) state |= 0x08U;
-    if (m_p->cpu.nextEvent < 0) state |= 0x10U;
-    return state;
+    return m_p && m_p->loaded && m_p->gbInited &&
+           GB_get_battery_dirty(&m_p->gb) ? TRUE : FALSE;
+}
+
+void GBHost::ClearSavedataDirty()
+{
+    if (m_p && m_p->gbInited)
+        GB_clear_battery_dirty(&m_p->gb);
 }
 
 Uint32 GBHost::RunClocks(Uint32 nTargetClocks)
 {
-    /* AURORA_SGB_NATIVE_RUNTIME_BOOT_ATTEMPT_V0_6_29_20260906
-     *
-     * Restore mGBA's native event-sized SM83 execution after the SGB HLE
-     * handshake. V0.6.15 never entered this path (H96 held before RunClocks),
-     * while V0.6.16 replaced it with per-unit SM83Tick stepping before runtime
-     * was actually released. Let SM83Run own GBProcessEvents as upstream does.
-     *
-     * Aurora still budgets logical GB clocks. mGBA timing uses two timing ticks
-     * per logical GB clock here, and positive event overshoot is carried to the
-     * following call. Any old negative cooperative debt is discarded because
-     * it belonged only to the retired V0.6.16 stepping scheme.
-     */
-    Uint64 need;
-    Uint64 advanced = 0;
-    Uint64 credit = 0;
+    Uint64 targetTicks, needTicks, advanced = 0, credit = 0;
     Uint32 guard = 0;
-    Int32 before, after;
+    Uint32 guardLimit;
 
-    if (!m_p || !m_p->loaded || !nTargetClocks)
+    if (!m_p || !m_p->loaded || !m_p->gbInited || !nTargetClocks)
         return 0;
 
-    need = (Uint64)nTargetClocks * 2ULL;
+    /* SameBoy GB_run() reports 8 MHz ticks. bsnes integrates it by stepping
+       the SGB thread with clocks >> 1; Aurora's ICD grant is the ~4 MHz side. */
+    targetTicks = (Uint64)nTargetClocks * 2ULL;
 
     if (m_p->clockCredit > 0)
         credit = (Uint64)m_p->clockCredit;
 
-    if (credit >= need)
+    if (credit >= targetTicks)
     {
-        m_p->clockCredit = (Int64)(credit - need);
+        m_p->clockCredit = (Int64)(credit - targetTicks);
         return nTargetClocks;
     }
 
-    need -= credit;
+    needTicks = targetTicks - credit;
     m_p->clockCredit = 0;
+    guardLimit = nTargetClocks > 0x0fffffffU
+        ? 0x7fffffffU : nTargetClocks * 8U + 4096U;
 
-    /* SM83Run returns at an mGBA event boundary. Usually one call is enough
-     * for Aurora's tiny SGB slices; the guard only bounds repeated boundaries,
-     * not SM83Run itself. */
-    while (advanced < need && guard++ < 64U)
+    while (advanced < needTicks && guard++ < guardLimit)
     {
-        Uint32 delta;
-
-        before = mTimingCurrentTime(&m_p->gb.timing);
-        SM83Run(&m_p->cpu);
-        after = mTimingCurrentTime(&m_p->gb.timing);
-
-        delta = (Uint32)after - (Uint32)before;
-
-        /* Upstream normally advances in SM83Run. Keep one native public Tick
-         * fallback only for a zero-progress boundary, then give control back. */
-        if (!delta)
-        {
-            SM83Tick(&m_p->cpu);
-            after = mTimingCurrentTime(&m_p->gb.timing);
-            delta = (Uint32)after - (Uint32)before;
-            if (!delta)
-                break;
-        }
-
-        advanced += (Uint64)delta;
+        unsigned step = GB_run(&m_p->gb);
+        if (!step)
+            break;
+        advanced += (Uint64)step;
     }
 
-    if (advanced > need)
-        m_p->clockCredit = (Int64)(advanced - need);
-
-    if (advanced >= need)
+    if (advanced >= needTicks)
+    {
+        m_p->clockCredit = (Int64)(advanced - needTicks);
         return nTargetClocks;
+    }
 
-    /* Partial progress is reported in logical GB clocks. */
-    advanced += credit;
-    if (advanced > (Uint64)nTargetClocks * 2ULL)
-        advanced = (Uint64)nTargetClocks * 2ULL;
-    return (Uint32)(advanced >> 1);
+    return (Uint32)((credit + advanced) >> 1);
 }
+
+Uint32 GBHost::DebugPreTickState() const { return 0; }
+const char *GBHost::DebugPreEventName() const { return "SameBoy GB_run"; }
+Int32 GBHost::DebugPreEventDelta() const { return 0; }
+Bool GBHost::DebugSkipDueAudioSample() { return FALSE; }
 
 Uint32 GBHost::GetClockHz() const
 {
-    if (!m_p) return 0;
-    return m_p->model == MODEL_SGB2 ? 4194304U : (Uint32)SGB_SM83_FREQUENCY;
-}
-Int64 GBHost::GetClockCredit() const { return m_p ? m_p->clockCredit : 0; }
-Uint32 GBHost::GetROMBytes() const
-{
-    return (m_p && m_p->loaded && m_p->gb.pristineRomSize <= 0xffffffffULL)
-        ? (Uint32)m_p->gb.pristineRomSize : 0;
-}
-Uint32 GBHost::GetROMCRC() const
-{
-    return (m_p && m_p->loaded) ? (Uint32)m_p->gb.romCrc32 : 0;
+    return m_p && m_p->gbInited
+        ? (Uint32)GB_get_clock_rate(&m_p->gb) : 0U;
 }
 
-/* AURORA_SGB_AUDIO_V0_5_20260904
- * mGBA produces one stereo PSG sample per 32 logical GB clocks. Keep the
- * FIFO owned by GBHost; SNSuperGameBoy performs the cartridge-side resample.
- */
-Uint32 GBHost::ReadAudioFrames(Int16 *pStereoInterleaved, Uint32 nFrames)
+Int64 GBHost::GetClockCredit() const
 {
-    size_t got;
-    if (!m_p || !m_p->initialized || !m_p->loaded || !pStereoInterleaved || !nFrames)
+    return m_p ? m_p->clockCredit : 0;
+}
+
+Uint32 GBHost::GetROMBytes() const
+{
+    return m_p ? m_p->romBytes : 0;
+}
+
+Uint32 GBHost::GetROMCRC() const
+{
+    return m_p ? m_p->romCRC : 0;
+}
+
+Uint32 GBHost::ReadAudioFrames(
+    Int16 *pStereoInterleaved, Uint32 nFrames)
+{
+    Uint32 out = 0;
+
+    if (!m_p || !pStereoInterleaved)
         return 0;
-    got = mAudioBufferRead(&m_p->gb.audio.buffer,
-                           (int16_t *)pStereoInterleaved, (size_t)nFrames);
-    return got <= 0xffffffffULL ? (Uint32)got : 0;
+
+    while (out < nFrames && m_p->audioCount)
+    {
+        Uint32 r = m_p->audioRead;
+        pStereoInterleaved[out * 2U + 0U] = m_p->audio[r * 2U + 0U];
+        pStereoInterleaved[out * 2U + 1U] = m_p->audio[r * 2U + 1U];
+        m_p->audioRead = (r + 1U) & (AUDIO_FRAMES - 1U);
+        --m_p->audioCount;
+        ++out;
+    }
+
+    return out;
 }
 
 void GBHost::ClearAudio()
 {
-    if (m_p && m_p->initialized)
-        mAudioBufferClear(&m_p->gb.audio.buffer);
+    if (!m_p)
+        return;
+
+    m_p->audioRead = 0;
+    m_p->audioWrite = 0;
+    m_p->audioCount = 0;
 }
 
-void GBHost::SetHooks(JoypHookT pJoyp, ScanlineHookT pScanline, LineHookT pLine, void *pContext)
+void GBHost::SetHooks(
+    JoypHookT pJoyp, ScanlineHookT pScanline,
+    LineHookT pLine, void *pContext)
 {
-    if (!m_p) return;
+    if (!m_p)
+        return;
+
     m_p->joypHook = pJoyp;
     m_p->scanlineHook = pScanline;
     m_p->lineHook = pLine;
     m_p->hookContext = pContext;
-    mGBAAuroraSetHooks((pJoyp || pScanline || pLine) ? this : NULL,
-                       pJoyp ? &GBHost::JoypThunk : NULL,
-                       pScanline ? &GBHost::ScanlineThunk : NULL,
-                       pLine ? &GBHost::LineThunk : NULL);
-}
-
-Uint8 GBHost::JoypThunk(void *pContext, int p14, int p15, int isWrite)
-{
-    GBHost *p = (GBHost *)pContext;
-    if (!p || !p->m_p || !p->m_p->joypHook) return 0x0f;
-    return p->m_p->joypHook(p->m_p->hookContext, p14 ? TRUE : FALSE, p15 ? TRUE : FALSE,
-                            isWrite ? TRUE : FALSE) & 0x0fU;
-}
-
-void GBHost::ScanlineThunk(void *pContext, int y, const unsigned short *pRow)
-{
-    GBHost *p = (GBHost *)pContext;
-    Uint8 shades[160];
-    Int32 x;
-    if (!p || !p->m_p || !p->m_p->scanlineHook || !pRow || y < 0 || y >= 144) return;
-    for (x = 0; x < 160; ++x) shades[x] = (Uint8)(pRow[x] & 3U);
-    p->m_p->scanlineHook(p->m_p->hookContext, y, shades);
-}
-
-void GBHost::LineThunk(void *pContext, int y)
-{
-    GBHost *p = (GBHost *)pContext;
-    if (!p || !p->m_p || !p->m_p->lineHook || y < 0 || y >= 154) return;
-    p->m_p->lineHook(p->m_p->hookContext, y);
 }
 
 Bool GBHost::SaveState(StateT *pState) const
 {
-    if (!pState || !m_p || !m_p->loaded) return FALSE;
+    size_t n;
+
+    if (!m_p || !m_p->loaded || !m_p->gbInited || !pState)
+        return FALSE;
+
+    n = GB_get_save_state_size(&m_p->gb);
+    if (!n || n > SERIALIZED_BYTES)
+        return FALSE;
+
     memset(pState, 0, sizeof(*pState));
-    pState->Magic = 0x48424741U;
-    pState->Version = 1;
+    pState->Magic = GBHOST_STATE_MAGIC;
+    pState->Version = GBHOST_STATE_VERSION;
     pState->Model = (Uint32)m_p->model;
+    pState->Reserved = (Uint32)n;
     pState->ClockCredit = m_p->clockCredit;
-    GBSerialize((struct GB *)&m_p->gb, (struct GBSerializedState *)pState->Serialized);
+    GB_save_state_to_buffer(&m_p->gb, pState->Serialized);
     return TRUE;
 }
 
 Bool GBHost::RestoreState(const StateT *pState)
 {
-    if (!pState || !m_p || !m_p->loaded || pState->Magic != 0x48424741U ||
-        pState->Version != 1 || (pState->Model != MODEL_SGB1 && pState->Model != MODEL_SGB2))
+    if (!m_p || !m_p->loaded || !m_p->gbInited || !pState)
         return FALSE;
-    if (!GBDeserialize(&m_p->gb, (const struct GBSerializedState *)pState->Serialized)) return FALSE;
-    /* The host-consumption FIFO is not part of the emulated machine state. */
-    mAudioBufferClear(&m_p->gb.audio.buffer);
-    m_p->model = (ModelE)pState->Model;
-    /* AURORA_SGB_COOPERATIVE_GB_RUNTIME_V0_6_16_20260905: negative values are valid cooperative debt. */
+
+    if (pState->Magic != GBHOST_STATE_MAGIC ||
+        pState->Version != GBHOST_STATE_VERSION ||
+        pState->Reserved == 0 ||
+        pState->Reserved > SERIALIZED_BYTES)
+        return FALSE;
+
+    if (GB_load_state_from_buffer(
+            &m_p->gb, pState->Serialized, (size_t)pState->Reserved) != 0)
+        return FALSE;
+
+    m_p->model = pState->Model == MODEL_SGB2 ? MODEL_SGB2 : MODEL_SGB1;
     m_p->clockCredit = pState->ClockCredit;
+    m_p->pixelX = m_p->pixelY = 0;
+    ClearAudio();
     return TRUE;
 }

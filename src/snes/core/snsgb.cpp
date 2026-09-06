@@ -15,10 +15,6 @@ static Uint8 g_uAuroraSgbFirstRunTrace = 0;
 /* AURORA_SGB_POST_FB_CLOCK_TRACE_V0_6_12_20260905 */
 static Uint8 g_uAuroraSgbClockBridgeTrace = 0;
 /* AURORA_SGB_STICKY_FB_RESULT_V0_6_13_1_20260905 */
-/* AURORA_SGB_FINAL_WAIT_OBSERVABLE_YIELD_V0_6_14_20260905
- * Diagnostic-only one-shot yield: guarantees that the first entry into the
- * post-FB four-frame wait becomes physically visible before deeper work. */
-static Bool g_bAuroraSgbFinalWaitYielded = FALSE;
 /* AURORA_SGB_HOLD_BEFORE_FIRST_GB_RUN_V0_6_15_20260905
  * V0.6.15 proved the full SGB handshake and isolated the freeze to real GB
  * runtime. V0.6.16 retires the hard hold and releases GBHost through a
@@ -190,26 +186,11 @@ Int16 SNSuperGameBoy::Saturate16(Int32 value)
 
 void SNSuperGameBoy::BeginBootHandshake()
 {
-    /* HLE only the observable SGB/SGB2 256-byte boot-ROM header-forwarding
-       effect. No boot-ROM bytes are embedded: the real SNES SGB firmware
-       receives F1/F3/F5/F7/F9/FB, each carrying checksum + 14 bytes from
-       GB $0104-$014f (zero-padded after $014f), with four GB frames between. */
-    m_uBootPacketIndex = 0;
-    m_uBootWaitClocks = 0;
-    m_uBootLine = 0;
-    m_uBootLineClocks = 0;
-    m_bBootHandshake = TRUE;
-    g_uAuroraSgbFinalWaitTrace = 0;
-    g_uAuroraSgbFirstRunTrace = 0;
-    g_uAuroraSgbClockBridgeTrace = 0;
-    g_bAuroraSgbFinalWaitYielded = FALSE;
-    g_bAuroraSgbRuntimeReleased = FALSE;
-    g_bAuroraSgbPreTickProbeHeld = FALSE;
-    g_bAuroraSgbPreTickUnsafeHold = FALSE;
-    AuroraSgbBootTrace("SGB H12: handshake begin");
+    /* AURORA_SGB_SAMEBOY_REAL_BOOT_V1_20260906
+     * SameBoy NO_SFC executes the open SGB bootstrap. JOYP writes feed
+     * SNSGBICD2 directly; never fabricate F1/F3/F5/F7/F9/FB in parallel. */
+    ResetBootHandshake();
     ResetAudioPipeline();
-    AuroraSgbBootTrace("SGB H13: audio FIFO cleared");
-    SubmitBootPacket();
 }
 
 void SNSuperGameBoy::AdvanceBootLCD(Uint32 nGBClocks)
@@ -231,17 +212,7 @@ Uint32 SNSuperGameBoy::AdvanceBootHandshake(Uint32 nGBClocks)
     {
         Uint32 step = nGBClocks < m_uBootWaitClocks ? nGBClocks : m_uBootWaitClocks;
 
-        /* Diagnostic-only one-shot yield. Do not consume this tiny GB slice:
-         * the next SNES sync supplies fresh clocks and executes the original
-         * path unchanged. This makes the pre-AdvanceBootLCD checkpoint render
-         * on PS2 even if the following call never comes back. */
-        if (m_uBootPacketIndex == BOOT_PACKET_COUNT &&
-            !g_bAuroraSgbFinalWaitYielded)
-        {
-            g_bAuroraSgbFinalWaitYielded = TRUE;
-            AuroraSgbBootTrace("SGB H95: final wait entered; next=LCD");
-            return 0;
-        }
+        /* AURORA_SGB_PLAYABLE_MVP_V1_20260906: no artificial pre-runtime yield. */
 
         if (m_uBootPacketIndex == BOOT_PACKET_COUNT && !g_uAuroraSgbFinalWaitTrace)
         {
@@ -324,7 +295,7 @@ void SNSuperGameBoy::Write(Uint32 uAddr, Uint8 uData)
 
         m_GB.Reset(m_eModel == MODEL_SGB2 ? GBHost::MODEL_SGB2 : GBHost::MODEL_SGB1);
         AuroraSgbBootTrace("SGB H44: GB reset returned");
-        BeginBootHandshake();
+        ResetBootHandshake();
         AuroraSgbBootTrace("SGB H45: handshake armed");
     }
 }
@@ -357,7 +328,7 @@ void SNSuperGameBoy::AdvanceMasterClocks(Uint32 nClocks, Uint32 uSnesMasterHz)
 }
 
 /* AURORA_SGB_AUDIO_V0_5_20260904
- * mGBA's GB PSG FIFO is sampled once per 32 logical GB clocks. Convert that
+ * SameBoy's GB PSG FIFO is sampled once per 32 logical GB clocks. Convert that
  * exact rational clock relationship to the SNES mixer's output domain with
  * a box-decimation accumulator. This is intentionally cartridge-local: the
  * normal SNES/NES/Sega/PCE host mixer never sees an SGB-specific mode.

@@ -80,7 +80,8 @@ Uint8 SNSGBICD2::ReadDecoded(Uint32 d)
            tile row, including VBlank 144..153, ORed with writeBank. */
         Uint8 ly8 = (m_nVCounter >= 0 && m_nVCounter < LCD_TOTAL_LINES)
             ? (Uint8)(m_nVCounter & ~7) : (Uint8)0;
-        return (Uint8)(ly8 | (m_uWriteBank & 3U));
+        Uint8 value = (Uint8)(ly8 | (m_uWriteBank & 3U));
+        return value;
     }
 
     if (d == 0x6002U) {
@@ -303,6 +304,7 @@ void SNSGBICD2::PushLCDScanline(Int32 nLine, const Uint8 *pShade2Bit)
     if (!pShade2Bit || nLine < 0 || nLine >= LCD_VISIBLE_LINES)
         return;
 
+
     m_nVCounter = nLine;
     rowBase = (Uint32)(nLine & 7) * 2U;
 
@@ -324,6 +326,14 @@ void SNSGBICD2::EndLCDLine(Int32 nLine)
     if (nLine < 0 || nLine >= LCD_TOTAL_LINES) return;
 
     m_nVCounter = nLine;
+
+    /* AURORA_SGB_ICD2_HRESET_BANK_V1_20260906
+     * The ICD2 write-row advances only after eight VISIBLE GB LCD scanlines
+     * have actually filled one 2bpp character row. VBlank lines 144..153 do
+     * not push pixels into the four-row ring and therefore must not rotate it.
+     * The row counter itself still advances through VBlank and resets on
+     * VSync below; $6000 may consequently report >= $88, which the SGB
+     * firmware intentionally rejects while waiting for visible data. */
     if (((nLine + 1) & 7) == 0)
         m_uWriteBank = (Uint8)((m_uWriteBank + 1U) & 3U);
 

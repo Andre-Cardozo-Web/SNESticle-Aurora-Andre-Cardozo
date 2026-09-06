@@ -53,12 +53,18 @@ Aurora also contains or integrates InfoNES, miniz, libxmp-lite, PS2SDK-related l
 
 `assets/font/m5x7.ttf` is the **m5x7** font by **Daniel Linssen**, released under **CC0 1.0 Universal**. Attribution is not required by CC0, but is appreciated by the author.
 
+<!-- AURORA_SAMEBOY_LICENSE_V1_20260906 -->
+### SameBoy (Game Boy core for Super Game Boy)
 
+Aurora integrates the pinned [`itsveenee/SameBoy`](https://github.com/itsveenee/SameBoy)
+Git submodule at `src/third_party/sameboy` as the Game Boy CPU/PPU/APU/MBC
+backend for the Super Game Boy ICD2 bridge. Aurora uses SameBoy's dedicated
+`GB_MODEL_SGB_NO_SFC` / `GB_MODEL_SGB2_NO_SFC` integration mode so the SNES
+and ICD2 remain emulated by Aurora while SameBoy supplies the Game Boy side.
 
-<!-- AURORA_MGBA_LICENSE_V1_20260906 -->
-### mGBA (Game Boy core for Super Game Boy)
+SameBoy is distributed under the Expat License. Preserve the original
+source-file notices and `src/third_party/sameboy/LICENSE`; a verbatim mirror is
+included at `LICENSES/SameBoy-Expat.txt`.
 
-Aurora integrates the pinned `itsveenee/mgba` Git submodule at `src/third_party/mgba` for the Game Boy/SM83 side of the Super Game Boy ICD2 bridge. The submodule remains a separately tracked upstream-derived component; preserve its original source-file copyright and license notices.
-
-mGBA is licensed under the Mozilla Public License 2.0 (MPL-2.0). The complete upstream license text remains at `src/third_party/mgba/LICENSE` and is mirrored verbatim at `LICENSES/mGBA-MPL-2.0.txt`. MPL-covered source files and modifications remain subject to the MPL-2.0 requirements.
-
+Aurora uses the open SameBoy SGB bootstrap for the SGB/SGB2 startup path.
+Nintendo boot ROM firmware is not embedded by this integration.
