@@ -403,6 +403,7 @@ static int _MainLoopZipNameIsRom(const char *pName)
                 case MAINLOOP_ENTRYTYPE_NESFDSBIOS:
                 case MAINLOOP_ENTRYTYPE_SEGAROM:
                 case MAINLOOP_ENTRYTYPE_PCEROM:
+                case MAINLOOP_ENTRYTYPE_GBROM:
                         return 1;
                 default:
                         return 0;
@@ -513,6 +514,7 @@ static int _MainLoopZipDynamicEntryFilter(
         case MAINLOOP_ENTRYTYPE_SNESROM:
         case MAINLOOP_ENTRYTYPE_NESROM:
         case MAINLOOP_ENTRYTYPE_NESFDSBIOS:
+        case MAINLOOP_ENTRYTYPE_GBROM:
             return nBytes <= MAINLOOP_LEGACY_ROM_MAX_BYTES;
         case MAINLOOP_ENTRYTYPE_NESFDSDISK:
             /* AURORA_FDS_V4_ZIP_FILTER_20260828 */
@@ -687,6 +689,16 @@ void _MainLoopUnloadRom()
                 bSaved ? 120 : 240,
                 bSaved ? "Copier/cart SRAM saved."
                        : "WARNING: copier/cart SRAM save failed!");
+        }
+    }
+
+    if (_pSystem == _pSnes && _pSnes && _pSnes->IsSuperGameBoy())
+    {
+        (void)_MainLoopForceCheckSRAM();
+        if (_MainLoop_SRAMUpdated)
+        {
+            Bool bSaved = _MainLoopSaveSRAM(TRUE);
+            ConPrint("SGB savedata unload flush: %s\n", bSaved ? "saved" : "FAILED");
         }
     }
 
@@ -3018,6 +3030,290 @@ Bool MainLoopSwcSwapNextDisk(void)
 }
 
 
+/* AURORA_SGB_RUNTIME_V0_4_20260904 */
+static void _MainLoopSgbCompact(const Char *pIn, Char *pOut, Int32 nOut)
+{
+    Int32 n = 0;
+    if (!pOut || nOut <= 0) return;
+    while (pIn && *pIn && n + 1 < nOut)
+    {
+        Char c = *pIn++;
+        if (c >= 'a' && c <= 'z') c = (Char)(c - ('a' - 'A'));
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) pOut[n++] = c;
+    }
+    pOut[n] = 0;
+}
+
+/* AURORA_SGB_FIRMWARE_TRACE_V0_6_2_20260904 */
+static void _MainLoopSgbBootTrace(const Char *pText);
+
+static Bool _MainLoopTrySgbFirmware(const Char *pPath, Bool *pbSgb2)
+{
+    CFileIO f;
+    Emu::Rom::LoadErrorE e;
+    Char compact[128];
+    if (!pPath || !*pPath || !pbSgb2) return FALSE;
+
+    _MainLoopSgbBootTrace("SGB 1C: opening firmware");
+    if (!f.Open(pPath, "rb"))
+        return FALSE;
+
+    _MainLoopSgbBootTrace("SGB 1D: firmware opened");
+    _pSnesRom->Unload();
+
+    _MainLoopSgbBootTrace("SGB 1E: parsing firmware");
+    e = _pSnesRom->LoadRom(&f);
+
+    _MainLoopSgbBootTrace("SGB 1F: parse returned");
+    f.Close();
+    if (e != Emu::Rom::LoadErrorE::LOADERROR_NONE ||
+        !(_pSnesRom->m_Flags & SNROM_FLAG_GAMEBOY))
+    {
+        _pSnesRom->Unload();
+        SnesRomResetRuntimeCompatForExternalDevice();
+        return FALSE;
+    }
+    _MainLoopSgbCompact(_pSnesRom->GetRomTitle(), compact, sizeof(compact));
+    *pbSgb2 = strstr(compact, "SUPERGAMEBOY2") ? TRUE : FALSE;
+    if (!*pbSgb2)
+    {
+        _MainLoopSgbCompact(pPath, compact, sizeof(compact));
+        if (strstr(compact, "SGB2") || strstr(compact, "SUPERGAMEBOY2")) *pbSgb2 = TRUE;
+    }
+    return TRUE;
+}
+
+static Bool _MainLoopFindAndLoadSgbFirmware(Bool *pbSgb2, Char *pChosen, Int32 nChosen)
+{
+    /* AURORA_SGB_FIRMWARE_FASTPATH_V0_6_5_20260905
+     * AURORA_SGB_FORCE_GENERIC_FIRMWARE_V0_6_15_3_20260905
+     *
+     * "sgb.*" is an explicit USER OVERRIDE, not an SGB1 label.
+     * If a valid generic sgb.* exists it MUST win over:
+     *   - the last-success cache,
+     *   - sgb2.*,
+     *   - descriptive aliases,
+     *   - generic SYSTEM directory fallback.
+     *
+     * The actual SGB1/SGB2 model is still detected by
+     * _MainLoopTrySgbFirmware() from the loaded ROM contents/title.
+     * Therefore an SGB2 BIOS deliberately renamed to sgb.sfc is still
+     * executed as SGB2; the generic filename only forces selection.
+     */
+    static Char s_LastFirmware[1024] = {0};
+
+    static const Char *forcedNames[] = {
+        "sgb.sfc", "sgb.smc", "sgb.fig", "sgb.rom",
+        "SGB.SFC", "SGB.SMC", "SGB.FIG", "SGB.ROM",
+        NULL
+    };
+
+    static const Char *normalNames[] = {
+        "sgb2.sfc", "sgb2.smc", "sgb2.fig", "sgb2.rom",
+        "Super Game Boy 2 (Japan).sfc",
+        "Super Game Boy 2 (Japan).smc",
+        "Super Game Boy 2 (Japan).fig",
+        "Super Game Boy 2 (Japan).rom",
+        "Super Game Boy (World).sfc",
+        "Super Game Boy (World).smc",
+        "Super Game Boy (World).fig",
+        "Super Game Boy (World).rom",
+        NULL
+    };
+
+    Char dir[512], path[1024];
+    Int32 i;
+
+    if (!pbSgb2 || !pChosen || nChosen <= 0)
+        return FALSE;
+
+    pChosen[0] = 0;
+
+    /* 1) HARD OVERRIDE: sgb.*.
+       This probe happens on EVERY .gb/.gbc launch, before cache reuse. */
+    for (i = 0; forcedNames[i]; ++i)
+    {
+        if (!MainLoopFindSystemFileDirectory(
+                dir, sizeof(dir), forcedNames[i]))
+            continue;
+
+        if (snprintf(path, sizeof(path), "%s/%s",
+                     dir, forcedNames[i]) >= (int)sizeof(path))
+            continue;
+
+        _MainLoopSgbBootTrace("SGB 1R: forced sgb.* candidate");
+
+        if (_MainLoopTrySgbFirmware(path, pbSgb2))
+        {
+            snprintf(s_LastFirmware, sizeof(s_LastFirmware), "%s", path);
+            snprintf(pChosen, nChosen, "%s", path);
+
+            ConPrint("SGB firmware override selected: %s (%s)\n",
+                     path, *pbSgb2 ? "SGB2" : "SGB1");
+            _MainLoopSgbBootTrace(
+                *pbSgb2
+                    ? "SGB 1S: forced sgb.* selected as SGB2"
+                    : "SGB 1S: forced sgb.* selected as SGB1");
+            return TRUE;
+        }
+    }
+
+    /* 2) Cache only after proving no valid sgb.* override exists. */
+    if (s_LastFirmware[0])
+    {
+        _MainLoopSgbBootTrace("SGB 1Q: cached firmware");
+        if (_MainLoopTrySgbFirmware(s_LastFirmware, pbSgb2))
+        {
+            snprintf(pChosen, nChosen, "%s", s_LastFirmware);
+            return TRUE;
+        }
+        s_LastFirmware[0] = 0;
+    }
+
+    /* 3) Normal explicit firmware names. */
+    for (i = 0; normalNames[i]; ++i)
+    {
+        if (!MainLoopFindSystemFileDirectory(
+                dir, sizeof(dir), normalNames[i]))
+            continue;
+
+        if (snprintf(path, sizeof(path), "%s/%s",
+                     dir, normalNames[i]) >= (int)sizeof(path))
+            continue;
+
+        if (_MainLoopTrySgbFirmware(path, pbSgb2))
+        {
+            snprintf(s_LastFirmware, sizeof(s_LastFirmware), "%s", path);
+            snprintf(pChosen, nChosen, "%s", path);
+            return TRUE;
+        }
+    }
+
+    /* 4) Last-resort SYSTEM scan.
+       Require a valid SGB SNES ROM; forced sgb.* was already tried above. */
+    _MainLoopSgbBootTrace("SGB 1G: fallback SYSTEM");
+
+    if (!MainLoopEnsureSystemDirectory(dir, sizeof(dir)))
+        return FALSE;
+
+    _MainLoopSgbBootTrace("SGB 1H: SYSTEM path OK");
+    _MainLoopSgbBootTrace("SGB 1I: opening SYSTEM");
+
+    DIR *d = opendir(dir);
+    if (!d)
+        return FALSE;
+
+    _MainLoopSgbBootTrace("SGB 1J: SYSTEM opened");
+
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL)
+    {
+        const Char *dot = strrchr(de->d_name, '.');
+
+        if (!dot ||
+            (strcasecmp(dot, ".sfc") &&
+             strcasecmp(dot, ".smc") &&
+             strcasecmp(dot, ".fig") &&
+             strcasecmp(dot, ".rom")))
+            continue;
+
+        if (snprintf(path, sizeof(path), "%s/%s",
+                     dir, de->d_name) >= (int)sizeof(path))
+            continue;
+
+        if (_MainLoopTrySgbFirmware(path, pbSgb2))
+        {
+            snprintf(s_LastFirmware, sizeof(s_LastFirmware), "%s", path);
+            snprintf(pChosen, nChosen, "%s", path);
+            closedir(d);
+            return TRUE;
+        }
+    }
+
+    closedir(d);
+    return FALSE;
+}
+
+/* AURORA_SGB_BOOT_TRACE_V0_6_1_20260904
+ * Breadcrumbs rendered before synchronous boot operations. If the PS2 wedges,
+ * the last visible line identifies the blocking boundary. */
+static void _MainLoopSgbBootTrace(const Char *pText)
+{
+    if (!pText)
+        return;
+    /* AURORA_SGB_RUNTIME_SAFE_TRACE_V0_6_9_20260905
+     * This helper is also reached by mGBA reset/video callbacks while the
+     * SNES CPU is inside an ICD2 MMIO write. Rendering the whole frontend
+     * recursively from that call stack is unsafe. Leave the status/console
+     * message queued for the normal frontend render instead. */
+    /* AURORA_SGB_HANDSHAKE_TRACE_V0_6_10_20260905
+     * Deep R/K/I/L/V boot traces remain on ConPrint, but only compact H
+     * protocol diagnostics own the on-screen status during runtime. */
+    /* AURORA_SGB_STICKY_FB_RESULT_V0_6_13_1_20260905
+     * H77-H79 are low-level sync diagnostics. Keep them in ConPrint only so
+     * they cannot overwrite the decisive H88-H94 result on the one-line UI. */
+    if (!strncmp(pText, "SGB H", 5) &&
+        strncmp(pText, "SGB H77:", 8) &&
+        strncmp(pText, "SGB H78:", 8) &&
+        strncmp(pText, "SGB H79:", 8))
+        MainLoopStatusPrintf(60 * 30, "%s", pText);
+    ConPrint("%s\n", pText);
+}
+
+/* AURORA_SGB_ATTACH_TRACE_V0_6_3_20260905
+ * Temporary bridge used only by SGB attach diagnostics. */
+extern "C" void AuroraSgbBootTrace(const char *pText)
+{
+    _MainLoopSgbBootTrace((const Char *)pText);
+}
+
+static Bool _MainLoopBootSuperGameBoy(const Uint8 *pGbData, Uint32 nGbBytes,
+                                      const Char *pOriginalPath,
+                                      Uint32 uGbCRC, Bool bLoadSRAM)
+{
+    Bool bSgb2 = FALSE;
+    Char firmware[1024];
+    if (!pGbData || nGbBytes < 0x150U || !_pSnes || !_pSnesRom) return FALSE;
+    _MainLoopSgbBootTrace("SGB 1/6: firmware search");
+    if (!_MainLoopFindAndLoadSgbFirmware(&bSgb2, firmware, sizeof(firmware)))
+    {
+        MainLoopModalPrintf(60 * 6,
+            "Super Game Boy BIOS missing. Put sgb2.sfc or sgb.sfc in SNESticle/SYSTEM.");
+        return FALSE;
+    }
+
+    _MainLoopSgbBootTrace("SGB 2/6: firmware OK");
+    _MainLoopSgbBootTrace("SGB 3/6: SNES shell");
+    _pSnes->SetSnesRom(_pSnesRom);
+    _MainLoopSgbBootTrace("SGB 4/6: GB core attach");
+    if (!_pSnes->AttachSuperGameBoyGame(pGbData, nGbBytes, bSgb2))
+    {
+        _pSnes->SetSnesRom(NULL);
+        _pSnesRom->Unload();
+        MainLoopModalPrintf(60 * 4,
+            "ERROR: Could not initialize Game Boy image through Super Game Boy.");
+        return FALSE;
+    }
+    _MainLoopSgbBootTrace("SGB 5/6: SNES reset");
+    _pSnes->Reset();
+    _MainLoopSgbBootTrace("SGB 6/6: ready");
+    _pSystem = _pSnes;
+    snprintf(_RomPath, sizeof(_RomPath), "%s", pOriginalPath ? pOriginalPath : "");
+    MainLoopStateOnRomChanged();
+    /* State identity is resolved lazily from the active GB payload via
+       GetSuperGameBoyGameCRC/GetSuperGameBoyGameBytes, never from firmware. */
+    (void)uGbCRC;
+    ConPrint("SGB Loaded: %s via %s (%s)\n", _RomName, firmware, bSgb2 ? "SGB2" : "SGB1");
+    _MainLoopSetSampleRate(_pSnes->GetSampleRate());
+    if (bLoadSRAM) _MainLoopLoadSRAM();
+    if (_fbTexture[0])
+    {
+        _fbTexture[0]->Clear();
+        TextureUpload(&_OutTex, _fbTexture[0]->GetLinePtr(0));
+    }
+    return TRUE;
+}
+
 Bool _MainLoopExecuteFile(const char *pFileName, Bool bLoadSRAM)
 {
     PathExtTypeE eType, eSourceType;
@@ -3279,6 +3575,10 @@ Bool _MainLoopExecuteFile(const char *pFileName, Bool bLoadSRAM)
             pSystem = _pSnes; pRom = _pSnesRom; pBios = NULL;
             _MainLoop_fOutputIntensity = 1.0f;
             break;
+        case MAINLOOP_ENTRYTYPE_GBROM:
+            pSystem = _pSnes; pRom = NULL; pBios = NULL;
+            _MainLoop_fOutputIntensity = 1.0f;
+            break;
         case MAINLOOP_ENTRYTYPE_PCEROM:
             pSystem = _pPce; pRom = _pPceRom; pBios = NULL;
             _MainLoop_fOutputIntensity = 1.0f;
@@ -3435,6 +3735,29 @@ Bool _MainLoopExecuteFile(const char *pFileName, Bool bLoadSRAM)
            pFileName, nRomBytes, (unsigned)_RomDataCapacity);
     _MainLoopGetName(_RomName, FileName);
     printf("ROMName: '%s'\n", _RomName);
+
+    if (eType == MAINLOOP_ENTRYTYPE_GBROM)
+    {
+        /* AURORA_SGB_PREBOOT_LOADING_FEEDBACK_V0_6_15_2_20260905
+         * User-facing reassurance must be presented BEFORE synchronous SGB
+         * firmware discovery/core attach/reset begins. This call site is the
+         * top-level browser/file-loader path, so rendering here is safe
+         * (unlike the deep mGBA/ICD2 debug callbacks).
+         *
+         * Render twice so both GS buffers contain the message before we enter
+         * _MainLoopBootSuperGameBoy(). It is intentionally ordinary transient
+         * status, not a permanent overlay; later Hxx diagnostics or normal UI
+         * naturally replace it. */
+        MainLoopStatusPrintf(60 * 30, "Loading BIOS and game file...");
+        MainLoopRender();
+        MainLoopRender();
+
+        Bool ok = _MainLoopBootSuperGameBoy(_RomData, (Uint32)nRomBytes,
+                                             OriginalPath, uRomIdentityCRC, bLoadSRAM);
+        _MainLoopFreeRomBuffer();
+        if (!ok) _MainLoopUnloadRom();
+        return ok;
+    }
 
     if (pBios)
     {

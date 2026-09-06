@@ -53,3 +53,8 @@ Aurora also contains or integrates InfoNES, miniz, libxmp-lite, PS2SDK-related l
 
 `assets/font/m5x7.ttf` is the **m5x7** font by **Daniel Linssen**, released under **CC0 1.0 Universal**. Attribution is not required by CC0, but is appreciated by the author.
 
+
+
+### mGBA (Game Boy core for Super Game Boy)
+
+Aurora links the pinned mGBA Game Boy/SM83 core only behind its Super Game Boy ICD2 bridge. mGBA is licensed under MPL-2.0; see `src/third_party/mgba/LICENSE`.

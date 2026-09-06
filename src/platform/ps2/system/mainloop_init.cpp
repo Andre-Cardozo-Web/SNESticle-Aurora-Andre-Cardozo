@@ -430,7 +430,7 @@ Bool MainLoopInit()
 	/* AURORA_ALL_CORE_SPLASH_V6_20260824 */
 	ScrPrintf("QuickNES: Shay Green / libretro contributors");
 	/* AURORA_FCEUMM_FDS_SPLASH_V1 */
-	ScrPrintf("FCEUmm FDS WIP: FCE Ultra / libretro");
+	ScrPrintf("FCEUmm FDS: FCE Ultra / libretro"); /* AURORA_BOOTLOG_FCEUMM_NOWIP_V1_20260905 */
 	ScrPrintf("PicoDrive: notaz / irixxxx / contributors");
 	ScrPrintf("Beetle PCE Fast: Mednafen / libretro contributors");
 	ScrPrintf("Licenses/notices: repository LICENSES/");
@@ -567,6 +567,9 @@ TextureUpload(&_OutTex, _fbTexture[0]->GetLinePtr(0));
 	PathExtAdd(MAINLOOP_ENTRYTYPE_SNESROM, (char *)"gd7");
 	PathExtAdd(MAINLOOP_ENTRYTYPE_SNESROM, (char *)"dx2");
 	PathExtAdd(MAINLOOP_ENTRYTYPE_SNESROM, (char *)"bsx");
+    /* AURORA_SGB_RUNTIME_V0_4_20260904 */
+    PathExtAdd(MAINLOOP_ENTRYTYPE_GBROM, (char *)"gb");
+    PathExtAdd(MAINLOOP_ENTRYTYPE_GBROM, (char *)"gbc");
 	/* AURORA_SWC_FLOPPY_V1_20260831
 	 * AURORA_SWC_D88_ONLY_V5_20260901:
 	 * copier floppy media is D88-only; IMG/raw is intentionally retired. */

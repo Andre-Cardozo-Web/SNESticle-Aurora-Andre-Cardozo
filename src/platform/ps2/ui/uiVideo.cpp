@@ -48,7 +48,8 @@ Bool MainLoopReinitVideoMode(Int32 mode);
 /* ------------------------------------------------------------------ */
 
 #define VIDEOCFG_MAGIC   0x53564944u   /* 'SVID' */
-#define VIDEOCFG_VERSION 43
+#define VIDEOCFG_VERSION 45 /* AURORA_CONFIG_STRICT_SGB_INVERT_CLOCK_V1_20260905: exact version + sgbinvert */
+/* AURORA_CFG_MODE7_FULL_ONCE_V1_6_20260905: 44 -> 45; same-layout migration, Mode7 Full once. */
 /* AURORA_CD_MUSIC_REDBOOK_V3_20260830: v43 appends shared SCD/PCE CD Red Book toggle; old configs default On. */
 /* AURORA_PCE_SCALING_LIGHTGUN_TOGGLE_V2_20260830: v42 appends Light Gun; old configs default On. */
 /* AURORA_FAMICOM_MIC_CFG41_20260828: v41 keeps the layout and migrates every older Safe Frameskip to 1 once. */
@@ -125,9 +126,11 @@ typedef struct
 	Int32  ggzoom;         /* v39: GG 160x144 -> 240x216, uniform 3:2 */
 	Int32  lightgun;       /* v42: CRC-known NES/Famicom gun; 1=On */
 	Int32  cdmusic;        /* v43: SCD/PCE CD Red Book CDDA; 1=On */
+	Int32  sgbinvert;     /* AURORA_CONFIG_STRICT_SGB_INVERT_CLOCK_V1_20260905: 0=Off, 1=On; effect SGB-only */
 } VideoCfgT;
-#define VIDEOCFG_V42_BYTES (sizeof(VideoCfgT) - sizeof(Int32))
-#define VIDEOCFG_V38_BYTES (sizeof(VideoCfgT) - 4 * sizeof(Int32))
+#define VIDEOCFG_V43_BYTES (sizeof(VideoCfgT) - sizeof(Int32))
+#define VIDEOCFG_V42_BYTES (VIDEOCFG_V43_BYTES - sizeof(Int32))
+#define VIDEOCFG_V38_BYTES (VIDEOCFG_V42_BYTES - 3 * sizeof(Int32))
 #define VIDEOCFG_V37_BYTES (VIDEOCFG_V38_BYTES - sizeof(Int32))
 
 /* v16 is the exact prefix written by v1.0.4 and by the first video-fix
@@ -454,6 +457,7 @@ void VideoSettingsSave(void)
 	cfg.ggzoom = PicoDriveBridge_GetGgZoom() ? 1 : 0;
 	cfg.lightgun = QuicknesBridge_GetLightGunEnabled() ? 1 : 0;
 	cfg.cdmusic = g_CdMusicEnabled ? 1 : 0; /* AURORA_CD_MUSIC_REDBOOK_V3_20260830 */
+	cfg.sgbinvert = MainLoopSgbInvertGetEnabled() ? 1 : 0; /* AURORA_CONFIG_STRICT_SGB_INVERT_CLOCK_V1_20260905 */
 	_VideoCfgPath(path);
 	BgmIOBegin();
 	MemCardWriteFile(path, (Uint8 *)&cfg, sizeof(cfg));
@@ -472,6 +476,8 @@ void VideoSettingsLoad(void)
 	/* AURORA_LEGACYCORE_V3_MENU_BRIDGE_20260824 */
 	/* AURORA_FAMICOM_MIC_CFG41_20260828: conservative Aurora default. */
 	MainLoopSafeFrameskipSetLevel(1);
+	MainLoopSgbInvertSetEnabled(FALSE); /* AURORA_CFG_LOADER_REBUILD_V1_13_20260905 */
+	PicoDriveBridge_SetRenderingMode(0); /* AURORA_CFG_LOADER_REBUILD_V1_13_20260905: MD FAST default */
 	PicoDriveBridge_SetGgZoom(false);
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.lightgun = 1; /* v42 default and all pre-v42 migrations: On */
@@ -498,6 +504,18 @@ void VideoSettingsLoad(void)
 		if (header.version == VIDEOCFG_VERSION)
 		{
 			loaded = MemCardReadFile(path, (Uint8 *)&cfg, sizeof(cfg));
+		}
+		else if (header.version == 44)
+		{
+			/* AURORA_CFG_LOADER_REBUILD_V1_13_20260905: v44/v45 same layout. */
+			loaded = MemCardReadFile(path, (Uint8 *)&cfg, sizeof(cfg));
+			if (loaded) cfg.version = VIDEOCFG_VERSION;
+		}
+		else if (header.version == 43)
+		{
+			/* AURORA_CFG_LOADER_REBUILD_V1_13_20260905: v43 prefix before sgbinvert. */
+			loaded = MemCardReadFile(path, (Uint8 *)&cfg, VIDEOCFG_V43_BYTES);
+			if (loaded) cfg.version = VIDEOCFG_VERSION;
 		}
 		else if (header.version == 42)
 		{
@@ -752,7 +770,7 @@ void VideoSettingsLoad(void)
 	if (loaded && header.version <= 32)
 	{
 		cfg.bgmtrack = 1;
-		cfg.mdrendering = 1;
+		cfg.mdrendering = 0; /* AURORA_CFG_LOADER_REBUILD_V1_13_20260905: FAST */
 	}
 
 	/* AURORA_AUDIO_SPLIT_VOLUMES_V36_20260823
@@ -784,13 +802,15 @@ void VideoSettingsLoad(void)
 	/* AURORA_FAMICOM_MIC_CFG41_20260828
 	 * Preserve v42 Safe Frameskip when v43 only adds CD music.
 	 * Older migrations retain the previous one-time conservative default. */
-	if (loaded && header.version < 42)
-		cfg.safeframeskip = 1;
+	/* AURORA_CFG_LOADER_REBUILD_V1_13_20260905
+ * One-time migration exceptions only. */
+if (loaded && header.version != VIDEOCFG_VERSION)
+{
+	cfg.safeframeskip = 1;
+	cfg.sneshackflags &= ~SNPPU_HACK_MODE7_HALF;
+}
 
-	/* New policy applies exactly once to every pre-v22 config. Once the
-	 * user saves v22, a manual Full selection remains persistent. */
-	if (loaded && header.version < 22)
-		cfg.sneshackflags |= SNPPU_HACK_MODE7_HALF;
+	/* AURORA_CFG_LOADER_REBUILD_V1_13_20260905: old Mode7 Half migration retired. */
 
 	if (loaded && cfg.magic == VIDEOCFG_MAGIC)
 	{
@@ -823,6 +843,9 @@ void VideoSettingsLoad(void)
 			QuicknesBridge_SetLightGunEnabled(cfg.lightgun != 0);
 		if (cfg.cdmusic == 0 || cfg.cdmusic == 1)
 			_VideoSetCdMusicEnabled(cfg.cdmusic ? TRUE : FALSE);
+		if (header.version >= 44 && header.version <= VIDEOCFG_VERSION &&
+		    (cfg.sgbinvert == 0 || cfg.sgbinvert == 1))
+			MainLoopSgbInvertSetEnabled(cfg.sgbinvert ? TRUE : FALSE); /* AURORA_CFG_LOADER_REBUILD_V1_13_20260905 */
 		if (cfg.smsfm == 0 || cfg.smsfm == 1)
 			PicoDriveBridge_SetSmsFm(cfg.smsfm != 0);
 		if (cfg.bgmvol >= 0 && cfg.bgmvol <= 400) BgmSetVolume(cfg.bgmvol);
@@ -1314,6 +1337,8 @@ _VideoRow(vy, 19, m_iSelect, "Exit to OSD", ""); vy += 12;
 			MainLoopTurboGetSpeedName()); vy += 12;
 		_VideoRow(vy, 44, m_iSelect, "Light Gun",
 			QuicknesBridge_GetLightGunEnabled() ? "On" : "Off"); vy += 12;
+		_VideoRow(vy, 45, m_iSelect, "SGB invert",
+			MainLoopSgbInvertGetEnabled() ? "On" : "Off"); vy += 12;
 	}
 
 	/* controls / hints (clear of the vy=215 footer) */
@@ -1355,7 +1380,7 @@ void CVideoScreen::Input(Uint32 buttons, Uint32 trigger)
 		else if (m_iSelect < 20)  { lo = 10; hi = 19; }
 		else if (m_iSelect <= 29) { lo = 20; hi = 29; }
 		else if (m_iSelect < 40)  { lo = 31; hi = 37; }
-		else if (m_iSelect < 50)  { lo = 40; hi = 44; }
+		else if (m_iSelect < 50)  { lo = 40; hi = 45; }
 		else                      { lo = 50; hi = 58; } /* AURORA_CD_MUSIC_REDBOOK_V3_20260830 */
 		if (trigger & PAD_UP)
 		{
@@ -1650,6 +1675,9 @@ case 17: /* Famiclone Audio */
 		case 44:
 			QuicknesBridge_SetLightGunEnabled(
 				!QuicknesBridge_GetLightGunEnabled());
+			break;
+		case 45:
+			MainLoopSgbInvertSetEnabled(!MainLoopSgbInvertGetEnabled());
 			break;
 		}
 

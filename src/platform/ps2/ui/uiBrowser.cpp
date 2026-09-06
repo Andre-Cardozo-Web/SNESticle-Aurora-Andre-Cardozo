@@ -90,6 +90,38 @@ static Bool BrowserIsSmbPath(const Char *pPath)
 	return pPath && strncasecmp(pPath, "smb:", 4) == 0;
 }
 
+/* AURORA_BROWSER_MTIME_V1_20260904
+ * iox_stat_t::mtime is {unused,sec,min,hour,day,month,year_lo,year_hi}.
+ * Keep a stable scalar without changing browser rendering.
+ */
+static int64_t BrowserDaysFromCivil(int y, unsigned m, unsigned d)
+{
+    int mp;
+    y -= (m <= 2);
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    mp = (int)m + (m > 2 ? -3 : 9);
+    const unsigned doy = (153u * (unsigned)mp + 2u) / 5u + d - 1u;
+    const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+    return (int64_t)era * 146097 + (int64_t)doe - 719468;
+}
+
+static int64_t BrowserIoxMtimeToScalar(const unsigned char stamp[8])
+{
+    int y;
+    unsigned mon, day, hour, min, sec;
+    if (!stamp) return -1;
+    sec = stamp[1]; min = stamp[2]; hour = stamp[3];
+    day = stamp[4]; mon = stamp[5];
+    y = (int)stamp[6] | ((int)stamp[7] << 8);
+    if (y < 1970 || mon < 1 || mon > 12 || day < 1 || day > 31 ||
+        hour > 23 || min > 59 || sec > 60)
+        return -1;
+    return BrowserDaysFromCivil(y, mon, day) * 86400 +
+           (int64_t)hour * 3600 + (int64_t)min * 60 + (int64_t)sec;
+}
+
+
 /* Resolve the rare DT_UNKNOWN equivalent without slowing down normal ROM
    folders. fileXio/iomanX guarantees FIO_S_* mode bits even for legacy ioman
    drivers (iomanX_dread converts FIO_SO_* before the result reaches the EE).
@@ -1011,7 +1043,7 @@ Bool CBrowserScreen::EnsureEntryCapacity(Int32 nRequired)
 }
 
 
-Bool CBrowserScreen::AddEntry(const Char *pName, BrowserEntryTypeE eType, Int32 size)
+Bool CBrowserScreen::AddEntry(const Char *pName, BrowserEntryTypeE eType, Int32 size, int64_t mtime)
 {
 	if (!pName || m_nEntries == INT_MAX ||
 	    !EnsureEntryCapacity(m_nEntries + 1))
@@ -1028,6 +1060,7 @@ Bool CBrowserScreen::AddEntry(const Char *pName, BrowserEntryTypeE eType, Int32 
 	m_pDirEntries[m_nEntries].name[BROWSER_ENTRY_MAXCHARS-1] = '\0';
 	m_pDirEntries[m_nEntries].size = size;
 	m_pDirEntries[m_nEntries].eType = eType;
+	m_pDirEntries[m_nEntries].mtime = mtime;
 	m_nEntries++;
 	if (eType == BROWSER_ENTRYTYPE_EXECUTABLE)
 		m_bHasExecutables = TRUE;
@@ -1802,7 +1835,7 @@ void CBrowserScreen::SetDir(const Char *pDir)
                 nSize = (Int32)de.stat.size;
             }
 
-            if (!AddEntry(de.name, eType, nSize))
+            if (!AddEntry(de.name, eType, nSize, BrowserIoxMtimeToScalar(de.stat.mtime)))
                 break;
         }
 

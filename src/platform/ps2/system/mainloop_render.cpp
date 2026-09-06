@@ -804,7 +804,6 @@ void MainLoopRender()
 		}
 	}
 
-
 	#if CODE_DEBUG
 	if (_MainLoop_bMCSaveReady && MCSave_WriteSync(FALSE, NULL))
 	{

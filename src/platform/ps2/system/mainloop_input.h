@@ -19,6 +19,12 @@ const char *MainLoopTurboGetSpeedName(void);
 void MainLoopTurboAdvanceHostFrame(void);
 void MainLoopTurboRearmHostPhase(void);
 
+/* AURORA_SGB_INVERT_INPUT_V1_20260905
+ * Preference is global/persistent, but its EFFECT is hard-gated in
+ * _MainLoopSnesInput() to the currently executing Super Game Boy only. */
+void MainLoopSgbInvertSetEnabled(Bool enabled);
+Bool MainLoopSgbInvertGetEnabled(void);
+
 /* AURORA_MD_PAD_LAYOUT_V1
  * Ordem dos três botões frontais do DualShock: Square / Cross / Circle.
  * ABC = A/B/C. BCA = B/C/A. SMS/GG usam somente os lógicos B/C. */

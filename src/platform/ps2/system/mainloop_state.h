@@ -30,6 +30,12 @@ void _MainLoopLoadSRAM();
 Bool _MainLoopCheckSRAM();
 Bool _MainLoopForceCheckSRAM();
 
+/* AURORA_SGB_GB_SAVEDATA_V0_3_20260904
+ * Full variable-size mGBA savedata VFile. Returned load buffer is malloc'd. */
+Bool MainLoopLoadGBSavedata(Uint8 **ppData, Uint32 *pBytes);
+Bool MainLoopSaveGBSavedata(const Uint8 *pData, Uint32 nBytes);
+void MainLoopFreeGBSavedata(Uint8 *pData);
+
 /* AURORA_SWC_CART_SRAM_MEMORY_FINAL_V5_3_20260901 */
 void _MainLoopSwcCartSRAMAttach(const Char *pCartPath);
 void _MainLoopSwcCartSRAMDetach();

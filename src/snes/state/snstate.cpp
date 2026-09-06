@@ -204,6 +204,7 @@ Bool SnesSystem::CanSerializeSpecialChipState()
         ? TRUE : FALSE;
 }
 
+/* AURORA_SGB_RUNTIME_V0_4_20260904: SGB also appends a private dynamic envelope. */
 /* AURORA_SWC_FLOPPY_V4_20260831
  * Normal SNES keeps sizeof(SnesStateT); SWC appends its private envelope. */
 void SnesSystem::SaveState(void *pState, Int32 nStateBytes)
@@ -221,11 +222,30 @@ Bool SnesSystem::SaveStateChecked(void *pState, Int32 nStateBytes)
     if (!pState)
         return FALSE;
 
-    if (!m_bSuperWildCard)
+    if (!m_bSuperWildCard && !m_SGB.IsActive())
     {
         if (nStateBytes != (Int32)sizeof(SnesStateT))
             return FALSE;
         SaveState((SnesStateT *)pState);
+        return TRUE;
+    }
+
+    if (m_SGB.IsActive())
+    {
+        Uint32 nSgbBytes;
+        Uint32 nExpected;
+        Uint8 *pBytes = (Uint8 *)pState;
+        SyncSuperGameBoy();
+        nSgbBytes = m_SGB.GetStateBytes();
+        nExpected = (Uint32)sizeof(SnesStateT) + nSgbBytes;
+        if (!nSgbBytes || nStateBytes <= 0 || (Uint32)nStateBytes != nExpected)
+            return FALSE;
+        SaveState((SnesStateT *)pBytes);
+        if (!m_SGB.SaveState(pBytes + sizeof(SnesStateT), nSgbBytes))
+        {
+            memset(pBytes, 0, nExpected);
+            return FALSE;
+        }
         return TRUE;
     }
 
@@ -252,11 +272,27 @@ Bool SnesSystem::RestoreStateChecked(void *pState, Int32 nStateBytes)
     if (!pState)
         return FALSE;
 
-    if (!m_bSuperWildCard)
+    if (!m_bSuperWildCard && !m_SGB.IsActive())
     {
         if (nStateBytes != (Int32)sizeof(SnesStateT))
             return FALSE;
         return RestoreState((SnesStateT *)pState);
+    }
+
+    if (m_SGB.IsActive())
+    {
+        Uint32 nSgbBytes = m_SGB.GetStateBytes();
+        Uint32 nExpected = (Uint32)sizeof(SnesStateT) + nSgbBytes;
+        Uint8 *pBytes = (Uint8 *)pState;
+        SnesStateT *pBase = (SnesStateT *)pBytes;
+        if (!nSgbBytes || nStateBytes <= 0 || (Uint32)nStateBytes != nExpected ||
+            memcmp(pBase->Tag, "SNS", 4) != 0)
+            return FALSE;
+        if (!RestoreState(pBase)) return FALSE;
+        MapSuperGameBoy();
+        if (!m_SGB.RestoreState(pBytes + sizeof(SnesStateT), nSgbBytes)) return FALSE;
+        m_uSGBSyncClock = (Uint32)SNCPUGetCounter(&m_Cpu, SNCPU_COUNTER_TOTAL);
+        return TRUE;
     }
 
     {
@@ -283,6 +319,11 @@ Bool SnesSystem::RestoreStateChecked(void *pState, Int32 nStateBytes)
 
 Int32 SnesSystem::GetStateSize()
 {
+    if (m_SGB.IsActive())
+    {
+        Uint32 n = (Uint32)sizeof(SnesStateT) + m_SGB.GetStateBytes();
+        return n <= 0x7fffffffu ? (Int32)n : 0;
+    }
     if (m_bSuperWildCard)
     {
         Uint32 n = (Uint32)sizeof(SnesStateT) + m_SWC.GetStateBytes();

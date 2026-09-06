@@ -30,6 +30,7 @@ extern "C" {
 #include "snsrtc.h"
 #include "snswc.h" /* AURORA_SWC_FLOPPY_V1_20260831 */
 #include "snsa1.h" /* AURORA_SA1_V1_REFERENCE_LOGIC_20260902 */
+#include "snsgb.h" /* AURORA_SGB_RUNTIME_V0_4_20260904 */
 
 #define SNES_RAMSIZE  0x20000
 #define SNES_SRAMSIZE (256 * 1024)
@@ -66,6 +67,18 @@ public:
      * return the Front copier and the SNES to their boot/BIOS state. */
     void    PowerCycleFrontCopier();
     /* Legacy predicate intentionally means active classic Front copier. */
+    /* AURORA_SGB_RUNTIME_V0_4_20260904 */
+    Bool AttachSuperGameBoyGame(const Uint8 *pData, Uint32 nBytes, Bool bSgb2);
+    void DetachSuperGameBoyGame();
+    Bool IsSuperGameBoy() const { return m_SGB.IsActive(); }
+    Uint32 GetSuperGameBoyGameBytes() const { return m_SGB.GetGameBytes(); }
+    Uint32 GetSuperGameBoyGameCRC() const { return m_SGB.GetGameCRC(); }
+    Uint32 GetSuperGameBoySavedataBytes() { return m_SGB.GetSavedataBytes(); }
+    Bool LoadSuperGameBoySavedata(const Uint8 *pData, Uint32 nBytes) { return m_SGB.AttachSavedata(pData, nBytes); }
+    Bool ExportSuperGameBoySavedata(Uint8 *pData, Uint32 nCap, Uint32 *pActual) { return m_SGB.ExportSavedata(pData, nCap, pActual); }
+    Bool IsSuperGameBoySavedataDirty() const { return m_SGB.SavedataDirty(); }
+    void ClearSuperGameBoySavedataDirty() { m_SGB.ClearSavedataDirty(); }
+
     Bool    IsSuperWildCard() const { return m_bSuperWildCard; }
     Bool    IsSuperWildCardFirmwareMode() const
         { return m_bSuperWildCard && m_SWC.IsFirmwareMode(); }
@@ -174,6 +187,8 @@ private:
 
 	/* AURORA_SWC_FLOPPY_V1_20260831 */
 	SNSuperWildCard m_SWC;
+    SNSuperGameBoy m_SGB;
+    Uint32 m_uSGBSyncClock;
 	Bool            m_bSuperWildCard;
 
 	SnesRom		*m_pRom;
@@ -215,6 +230,10 @@ private:
 	static void SNCPU_TRAPFUNC  WriteGSU(SNCpuT *pCpu, Uint32 uAddr, Uint8 uData);
 	static Uint8 SNCPU_TRAPFUNC ReadSWC(SNCpuT *pCpu, Uint32 uAddr);
 	static void SNCPU_TRAPFUNC  WriteSWC(SNCpuT *pCpu, Uint32 uAddr, Uint8 uData);
+    static Uint8 SNCPU_TRAPFUNC ReadSGB(SNCpuT *pCpu, Uint32 uAddr);
+    static void SNCPU_TRAPFUNC WriteSGB(SNCpuT *pCpu, Uint32 uAddr, Uint8 uData);
+    void MapSuperGameBoy();
+    void SyncSuperGameBoy();
 	static Uint8 SNCPU_TRAPFUNC ReadSA1BWRAM(SNCpuT *pCpu, Uint32 uAddr);
 	static void SNCPU_TRAPFUNC  WriteSA1BWRAM(SNCpuT *pCpu, Uint32 uAddr, Uint8 uData);
 	static Uint8 SNCPU_TRAPFUNC ReadSA1ROM(SNCpuT *pCpu, Uint32 uAddr);

@@ -5,6 +5,7 @@
 #include "types.h"
 #include "snes.h"
 #include "rendersurface.h"
+#include "mixbuffer.h"
 #include "console.h"
 #include "prof.h"
 #include "sntiming.h"
@@ -202,6 +203,43 @@ static Uint32 SnesDbgHash32(const void *pData, Uint32 nBytes)
 
 
 #define SNES_SYNCPPUEVERYLINE (CODE_DEBUG && 0) 
+
+/* AURORA_SGB_AUDIO_V0_5_20260904
+ * Transparent per-frame proxy used only while a real SGB firmware/game is
+ * active. SPC700 still renders exactly as before; GB PSG is summed into the
+ * same 32 kHz PCM samples before AudMixBuffer performs its host conversion.
+ */
+class SGBMixBufferProxy : public CMixBuffer
+{
+public:
+    SGBMixBufferProxy(SNSuperGameBoy *pSGB, CMixBuffer *pTarget)
+        : m_pSGB(pSGB), m_pTarget(pTarget) {}
+
+    virtual void GetFormat(Uint32 *pRate, Uint32 *pBits, Uint32 *pChannels)
+        { m_pTarget->GetFormat(pRate, pBits, pChannels); }
+    virtual Int32 GetOutputSamples() { return m_pTarget->GetOutputSamples(); }
+    virtual void OutputSamplesStereo(Int16 *pLeft, Int16 *pRight, Int32 nSamples)
+    {
+        Uint32 rate = 0, bits = 0, channels = 0;
+        m_pTarget->GetFormat(&rate, &bits, &channels);
+        (void)bits; (void)channels;
+        m_pSGB->MixAudio(pLeft, pRight, nSamples, rate);
+        m_pTarget->OutputSamplesStereo(pLeft, pRight, nSamples);
+    }
+    virtual void OutputSamplesMono(Int16 *pSamples, Int32 nSamples)
+    {
+        Uint32 rate = 0, bits = 0, channels = 0;
+        m_pTarget->GetFormat(&rate, &bits, &channels);
+        (void)bits; (void)channels;
+        m_pSGB->MixAudio(pSamples, NULL, nSamples, rate);
+        m_pTarget->OutputSamplesMono(pSamples, nSamples);
+    }
+    virtual void Flush() { m_pTarget->Flush(); }
+
+private:
+    SNSuperGameBoy *m_pSGB;
+    CMixBuffer *m_pTarget;
+};
 
 
 void SnesSystem::SyncSPC(Int32 uExtra)
@@ -1187,6 +1225,7 @@ SnesSystem::SnesSystem()
 	m_bSDD1 = FALSE;
 	m_bSA1IRQ = FALSE; /* AURORA_SA1_V1_REFERENCE_LOGIC_20260902 */
 	m_bSuperWildCard = FALSE; /* AURORA_SWC_FLOPPY_V1_20260831 */
+	m_uSGBSyncClock = 0; /* AURORA_SGB_RUNTIME_V0_4_20260904 */
 
 	// setup ppu
 	m_PPURender.SetPPU(&m_PPU);
@@ -1263,6 +1302,12 @@ void SnesSystem::Reset()
 	// reset cpu
 	SNCPUReset(&m_Cpu, true);
 	SNSPCReset(&m_Spc, true);
+
+    if (m_SGB.IsActive())
+    {
+        m_SGB.Reset();
+        m_uSGBSyncClock = (Uint32)SNCPUGetCounter(&m_Cpu, SNCPU_COUNTER_TOTAL);
+    }
 
 #if SNES_HK97_SPC_BOOT
 	/* AURORA_HK97_SPC_PREWARM_V9
@@ -1396,6 +1441,8 @@ void SnesSystem::SetSnesRom(SnesRom *pRom)
 	}
 	m_SA1.Detach(); /* AURORA_SA1_V1_REFERENCE_LOGIC_20260902 */
 	m_bSA1IRQ = FALSE;
+	m_SGB.Detach();
+	m_uSGBSyncClock = (Uint32)SNCPUGetCounter(&m_Cpu, SNCPU_COUNTER_TOTAL);
 	if (m_pRom)
 	{
 		// disconnect from current rom
@@ -1875,6 +1922,7 @@ void SnesSystem::ExecuteCPU(Int32 nCycles)
         if (nElapsed > 0)
             m_SA1.Run(nElapsed);
     }
+    SyncSuperGameBoy();
 }
 
 
@@ -2347,7 +2395,15 @@ m_PPU.SetRegionPAL(bPAL);
 #if SNDBG_LOG
 	Uint32 _tMix = ProfCtrGetCycle();
 #endif
-	m_SpcDspMixer.Mix(pSound);
+	if (m_SGB.IsActive() && pSound)
+	{
+		SGBMixBufferProxy SgbAudio(&m_SGB, pSound);
+		m_SpcDspMixer.Mix(&SgbAudio);
+	}
+	else
+	{
+		m_SpcDspMixer.Mix(pSound);
+	}
 #if SNDBG_LOG
 	g_TmgCycMix += ProfCtrGetCycle() - _tMix;
 #endif
@@ -2743,8 +2799,83 @@ m_PPU.SetRegionPAL(bPAL);
 }
 
 
+Bool SnesSystem::AttachSuperGameBoyGame(const Uint8 *pData, Uint32 nBytes, Bool bSgb2)
+{
+    if (!m_pRom || !(m_pRom->m_Flags & SNROM_FLAG_GAMEBOY)) return FALSE;
+    if (!m_SGB.AttachGame(pData, nBytes,
+            bSgb2 ? SNSuperGameBoy::MODEL_SGB2 : SNSuperGameBoy::MODEL_SGB1))
+        return FALSE;
+    m_uSGBSyncClock = (Uint32)SNCPUGetCounter(&m_Cpu, SNCPU_COUNTER_TOTAL);
+    MapSuperGameBoy();
+    return TRUE;
+}
+
+void SnesSystem::DetachSuperGameBoyGame()
+{
+    m_SGB.Detach();
+    m_uSGBSyncClock = (Uint32)SNCPUGetCounter(&m_Cpu, SNCPU_COUNTER_TOTAL);
+}
+
+/* AURORA_SGB_POST_FB_CLOCK_TRACE_V0_6_12_20260905 */
+extern "C" void AuroraSgbBootTrace(const char *pText);
+extern "C" Bool AuroraSgbDebugFBConsumed(void);
+
+void SnesSystem::SyncSuperGameBoy()
+{
+    static Uint8 s_uAuroraPostFBSyncTrace = 0;
+    Bool bPostFB;
+    Uint32 now, delta, hz;
+
+    if (!m_SGB.IsActive()) return;
+
+    bPostFB = AuroraSgbDebugFBConsumed();
+    if (!bPostFB)
+        s_uAuroraPostFBSyncTrace = 0;
+    else if (!(s_uAuroraPostFBSyncTrace & 0x01U)) {
+        s_uAuroraPostFBSyncTrace |= 0x01U;
+        AuroraSgbBootTrace("SGB H77: SNES sync after FB");
+    }
+
+    now = (Uint32)SNCPUGetCounter(&m_Cpu, SNCPU_COUNTER_TOTAL);
+    delta = now - m_uSGBSyncClock;
+
+    if (!delta) {
+        if (bPostFB && !(s_uAuroraPostFBSyncTrace & 0x02U)) {
+            s_uAuroraPostFBSyncTrace |= 0x02U;
+            AuroraSgbBootTrace("SGB H78: SNES sync delta zero");
+        }
+        return;
+    }
+
+    if (bPostFB && !(s_uAuroraPostFBSyncTrace & 0x04U)) {
+        s_uAuroraPostFBSyncTrace |= 0x04U;
+        AuroraSgbBootTrace("SGB H79: SNES sync delta nonzero");
+    }
+
+    hz = (m_pRom && m_pRom->m_eVideoType == SNROM_VIDEO_PAL) ? 21281370U : 21477272U;
+    m_SGB.AdvanceMasterClocks(delta, hz);
+    m_uSGBSyncClock = now;
+}
+
+Uint8 SNCPU_TRAPFUNC SnesSystem::ReadSGB(SNCpuT *pCpu, Uint32 uAddr)
+{
+    SnesSystem *pSnes = (SnesSystem *)pCpu->pUserData;
+    if (!pSnes) return pCpu->uMDR;
+    pSnes->SyncSuperGameBoy();
+    return pSnes->m_SGB.Read(uAddr, pCpu->uMDR);
+}
+
+void SNCPU_TRAPFUNC SnesSystem::WriteSGB(SNCpuT *pCpu, Uint32 uAddr, Uint8 uData)
+{
+    SnesSystem *pSnes = (SnesSystem *)pCpu->pUserData;
+    if (!pSnes) return;
+    pSnes->SyncSuperGameBoy();
+    pSnes->m_SGB.Write(uAddr, uData);
+}
+
 Int32 SnesSystem::GetSRAMBytes()
 {
+    if (m_SGB.IsActive()) return 0; /* AURORA_SGB_RUNTIME_V0_4_20260904 */
     /* AURORA_SWC_FLOPPY_V1_20260831 */
     if (m_bSuperWildCard)
         return 0x8000;
@@ -2759,6 +2890,7 @@ Int32 SnesSystem::GetSRAMBytes()
 
 Uint8 *SnesSystem::GetSRAMData()
 {
+    if (m_SGB.IsActive()) return NULL; /* AURORA_SGB_RUNTIME_V0_4_20260904 */
     /* AURORA_SWC_FLOPPY_V1_20260831 */
     if (m_bSuperWildCard)
         return m_SRam;

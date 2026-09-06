@@ -20,6 +20,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <libcdvd.h> /* AURORA_PS2_RTC_CLOCK_DIRECT_MENU_V1_5_20260905 */
+#include <osd_config.h> /* PS2 configured local time */
 
 #include "mainloop_debug.h"
 #include "mainloop_shared.h"
@@ -351,7 +353,43 @@ void _MenuDraw()
     /* Status bar (green): compiler version on the left and app version
        right-aligned. Network details already live on the Host settings
        screen, so the redundant IP field no longer consumes this row. */
-    FontPrintf(8, vy, "  GCC%d.%d", __GNUC__, __GNUC_MINOR__);
+    /* AURORA_PS2_RTC_CLOCK_DIRECT_MENU_V1_5_20260905
+     * Replace the compiler footer directly at its real source.
+     * The old string was "  GCC%d.%d" at x=8. The requested origin is the
+     * position of G, so preserve the width of the two leading spaces. */
+    {
+        static Uint32 s_RtcPoll = 0;
+        static Char s_RtcText[9] = "--:--:--";
+
+        if ((s_RtcPoll++ & 31U) == 0U)
+        {
+            sceCdCLOCK rtc;
+            if (sceCdReadClock(&rtc))
+            {
+                unsigned hour, minute, second;
+
+                configConvertToLocalTime(&rtc);
+
+                hour =
+                    (unsigned)(((rtc.hour >> 4) & 0x0FU) * 10U +
+                               (rtc.hour & 0x0FU));
+                minute =
+                    (unsigned)(((rtc.minute >> 4) & 0x0FU) * 10U +
+                               (rtc.minute & 0x0FU));
+                second =
+                    (unsigned)(((rtc.second >> 4) & 0x0FU) * 10U +
+                               (rtc.second & 0x0FU));
+
+                snprintf(
+                    s_RtcText, sizeof(s_RtcText),
+                    "%02u:%02u:%02u",
+                    hour, minute, second
+                );
+            }
+        }
+
+        FontPuts(8 + FontGetStrWidth("  "), vy, s_RtcText);
+    }
 
 #ifdef APP_VERSION
     static const char *_AppVersionStr =

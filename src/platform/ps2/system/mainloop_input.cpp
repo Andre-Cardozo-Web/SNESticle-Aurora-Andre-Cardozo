@@ -52,6 +52,21 @@ static Uint32 _MainLoop_TurboPhaseBase = 0;
 static Uint32 _MainLoop_TurboHostFrame = 0;
 static Uint32 _MainLoop_TurboHostPhaseBase = 0;
 
+/* AURORA_SGB_INVERT_INPUT_V1_20260905
+ * Default OFF. This stores only the preference; no raw host input is
+ * globally rewritten here. */
+static Bool _MainLoop_SgbInvert = FALSE;
+
+void MainLoopSgbInvertSetEnabled(Bool enabled)
+{
+    _MainLoop_SgbInvert = enabled ? TRUE : FALSE;
+}
+
+Bool MainLoopSgbInvertGetEnabled(void)
+{
+    return _MainLoop_SgbInvert;
+}
+
 /* AURORA_V6_PHYSICAL_CONSOLE_BUTTON_STATE_20260828
  * Undocumented alternate controls:
  *   PicoDrive + real Master System -> console PAUSE NMI
@@ -233,6 +248,31 @@ void _MainLoopInputSuppressUntilRelease()
 static Uint16 _MainLoopSnesInput(Uint32 cond)
 {
 	Uint32 pad = 0;
+
+    /* AURORA_SGB_INVERT_INPUT_V1_20260905
+     * Rotate ONLY the four physical DualShock face buttons, and ONLY while
+     * the active emulated system is a real Super Game Boy session:
+     *
+     *   Circle -> Cross(X) -> Square -> Triangle -> Circle
+     *
+     * Aurora's own menu consumes host buttons before this gameplay mapper,
+     * and every non-SGB system fails this gate. L/R/Start/Select/D-pad are
+     * untouched, so SGB BIOS L+R remains exactly L+R. */
+    if (_MainLoop_SgbInvert &&
+        _pSystem == _pSnes &&
+        _pSnes &&
+        _pSnes->IsSuperGameBoy())
+    {
+        const Uint32 original = cond;
+        const Uint32 face =
+            PAD_CIRCLE | PAD_CROSS | PAD_SQUARE | PAD_TRIANGLE;
+
+        cond &= ~face;
+        if (original & PAD_CIRCLE)   cond |= PAD_CROSS;
+        if (original & PAD_CROSS)    cond |= PAD_SQUARE;
+        if (original & PAD_SQUARE)   cond |= PAD_TRIANGLE;
+        if (original & PAD_TRIANGLE) cond |= PAD_CIRCLE;
+    }
 
 	if (cond & PAD_LEFT)    pad|= (SNESIO_JOY_LEFT);
 	if (cond & PAD_RIGHT)   pad|= (SNESIO_JOY_RIGHT);

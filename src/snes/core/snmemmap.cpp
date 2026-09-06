@@ -1015,6 +1015,21 @@ void SnesSystem::MapMemExLoRom(void)
 	MapMem(_SnesMemMap_ExLoRom_Sys);
 }
 
+void SnesSystem::MapSuperGameBoy()
+{
+    Uint32 bank;
+    if (!m_pRom || !(m_pRom->m_Flags & SNROM_FLAG_GAMEBOY)) return;
+    for (bank = 0; bank <= 0x3F; ++bank)
+    {
+        Uint32 a = (bank << 16) | 0x6000U;
+        SNCPUSetMemSpeed(&m_Cpu, a, 0x2000, SNCPU_CYCLE_SLOW);
+        SNCPUSetTrap(&m_Cpu, a, 0x2000, ReadSGB, WriteSGB);
+        a |= 0x800000U;
+        SNCPUSetMemSpeed(&m_Cpu, a, 0x2000, SNCPU_CYCLE_SLOW);
+        SNCPUSetTrap(&m_Cpu, a, 0x2000, ReadSGB, WriteSGB);
+    }
+}
+
 void SnesSystem::MapMem(SNRomMappingE eRomMapping, Uint32 uFlags)
 {
 	// set default traps
@@ -1161,6 +1176,9 @@ void SnesSystem::MapMem(SNRomMappingE eRomMapping, Uint32 uFlags)
 	 * needed. SNCPUSetRomSpeed changes direct ROM descriptors only. */
 	if (g_SnesCompatTopGearFastRom)
 		SNCPUSetRomSpeed(&m_Cpu, 0x000000, 0x1000000, SNCPU_CYCLE_FAST);
+
+	if (uFlags & SNROM_FLAG_GAMEBOY)
+		MapSuperGameBoy(); /* AURORA_SGB_RUNTIME_V0_4_20260904 */
 
 	/* Indexed/16-bit accesses can transiently carry past $FFFFFF.  Publish
 	   bank $00 into the overflow page after every cartridge/system override

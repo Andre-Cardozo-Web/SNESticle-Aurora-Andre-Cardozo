@@ -4,6 +4,9 @@
 
 #include "uiScreen.h"
 #include "uiMenu.h"
+#include <stdint.h>
+
+/* AURORA_BROWSER_MTIME_V1_20260904: metadata only; never rendered. */
 
 /* NAME_MAX on PS2's iomanX-backed filesystems is 255 chars (matching
    POSIX). The original iaddis build hard-capped each entry at 64,
@@ -33,6 +36,8 @@ struct BrowserEntryT
 	Char name[BROWSER_ENTRY_MAXCHARS];
 	Int32 size;
 	BrowserEntryTypeE eType;
+	/* Retained internally; -1 for synthetic entries. */
+	int64_t mtime;
 };
 
 typedef BrowserEntryTypeE (*BrowserNameResolveFuncT)(const char *pName);
@@ -75,7 +80,8 @@ public:
 
 	void ResetEntries();
 	void SortEntries();
-	Bool AddEntry(const Char *pName, BrowserEntryTypeE eType, Int32 size);
+	Bool AddEntry(const Char *pName, BrowserEntryTypeE eType, Int32 size,
+	              int64_t mtime = -1);
 
 	int GetEntryPath(char *pStr, int nChars);
 	Char *GetEntryName();

@@ -99,6 +99,16 @@ FCEUMM_FDS_CORE_DEPS := $(FCEUMM_FDS_DIR)/src/fceu.c $(FCEUMM_FDS_DIR)/src/fds.c
 # AURORA_FCEUMM_FDS_V0_6_CONFIG_END
 # AURORA_V8_4_1_LEGACY_SNES_CORE_REMOVED_20260903
 
+# AURORA_SGB_GBHOST_V0_3_CONFIG
+MGBA_DIR ?= $(CURDIR)/src/third_party/mgba
+MGBA_BUILD_DIR ?= $(CURDIR)/build/mgba
+MGBA_STAGE_DIR ?= $(CURDIR)/build/mgba-src
+MGBA_STAGE_STAMP := $(MGBA_STAGE_DIR)/.aurora-stage-v0_4
+MGBA_LIB ?= $(MGBA_BUILD_DIR)/libmgba_gb_ps2.a
+MGBA_PS2_MAKEFILE := $(CURDIR)/tools/Makefile.mgba-gb-ps2
+MGBA_PREPARE_TOOL := $(CURDIR)/tools/prepare_mgba_sgb_sources.py
+MGBA_PYTHON ?= python3
+
 # AURORA_PD_TRYAGAIN_V1_PS2_BUILD_PARITY
 # PicoDrive's standalone PS2 configure path explicitly uses -G0. Keep
 # the embedded libretro core on the same EE small-data ABI assumption;
@@ -473,7 +483,9 @@ INCS := \
 	-I$(SRC_DIR)/sega/system \
 	-I$(SRC_DIR)/sega/picodrive \
 	-I$(SRC_DIR)/pce/system \
-	-I$(SRC_DIR)/pce/beetle
+	-I$(SRC_DIR)/pce/beetle \
+	-I$(MGBA_STAGE_DIR)/include \
+	-I$(MGBA_STAGE_DIR)/src
 
 LIBDIRS := \
 	-L$(PS2SDK)/ee/lib \
@@ -612,6 +624,9 @@ SRCS := \
 	src/snes/core/snmask128.cpp \
 	src/snes/core/snmemmap.cpp \
 	src/snes/core/snsa1.cpp \
+	src/snes/core/gbhost.cpp \
+	src/snes/core/snsgb_icd2.cpp \
+	src/snes/core/snsgb.cpp \
 	src/snes/core/snswc.cpp \
 	src/snes/ppu/snppubg.cpp \
 	src/snes/ppu/snppublend_gs.cpp \
@@ -1089,9 +1104,28 @@ fceumm-fds-clean:
 	@rm -rf "$(FCEUMM_FDS_BUILD_DIR)"
 # AURORA_FCEUMM_FDS_V0_6_RULES_END
 
+# AURORA_SGB_GBHOST_V0_3_RULES
+$(MGBA_STAGE_STAMP): $(MGBA_PREPARE_TOOL)
+	@rm -rf "$(MGBA_STAGE_DIR)"
+	@$(MGBA_PYTHON) "$(MGBA_PREPARE_TOOL)" --source "$(MGBA_DIR)" --stage "$(MGBA_STAGE_DIR)"
+	@test -f "$@"
+
+$(OBJ_DIR)/snes/core/gbhost.o: $(MGBA_STAGE_STAMP)
+
+.PHONY: FORCE_MGBA_GB_INCREMENTAL
+FORCE_MGBA_GB_INCREMENTAL:
+
+# AURORA_SGB_STAGE_SERIALIZE_V0_6_4_2_20260905
+# Serialize the shared staged tree before launching the nested mGBA make.
+# gbhost.o already depends on the same stamp; this closes the parallel
+# rm-rf/copy race between the main make and tools/Makefile.mgba-gb-ps2.
+$(MGBA_LIB): FORCE_MGBA_GB_INCREMENTAL $(MGBA_STAGE_STAMP) $(MGBA_PS2_MAKEFILE) $(MGBA_PREPARE_TOOL)
+	@printf '[ mGBA GBHost ] checking staged PS2 core\n'
+	+@PATH="$(PS2DEV)/ee/bin:$(PS2DEV)/bin:$(PS2SDK)/bin:$$PATH" $(MAKE) --no-print-directory -f "$(MGBA_PS2_MAKEFILE)" ROOT="$(CURDIR)" MGBA_DIR="$(MGBA_DIR)" BUILD_DIR="$(MGBA_BUILD_DIR)" STAGE_DIR="$(MGBA_STAGE_DIR)" CC="$(EE_CC)" AR="$(EE_AR)" all
+
 # AURORA_FCEUMM_FDS_V0_5_RUNTIME_LINK
-$(TARGET): $(OBJS) $(PICODRIVE_LIB) $(QUICKNES_LIB) $(PCE_LIB) $(FCEUMM_FDS_LIB) | $(OBJ_DIR)
-	$(call RUN_LINK,$@,$(EE_CXX) $(LTO_LINK_FLAGS) -Xlinker --gc-sections -Xlinker -Map -Xlinker "$(OBJ_DIR)/SNESticle.map" -o "$@" $(OBJS) "$(PICODRIVE_LIB)" "$(QUICKNES_LIB)" "$(PCE_LIB)" "$(FCEUMM_FDS_LIB)" $(LIBDIRS) $(LIBS))
+$(TARGET): $(OBJS) $(PICODRIVE_LIB) $(QUICKNES_LIB) $(PCE_LIB) $(FCEUMM_FDS_LIB) $(MGBA_LIB) | $(OBJ_DIR)
+	$(call RUN_LINK,$@,$(EE_CXX) $(LTO_LINK_FLAGS) -Xlinker --gc-sections -Xlinker -Map -Xlinker "$(OBJ_DIR)/SNESticle.map" -o "$@" $(OBJS) "$(PICODRIVE_LIB)" "$(QUICKNES_LIB)" "$(PCE_LIB)" "$(FCEUMM_FDS_LIB)" "$(MGBA_LIB)" $(LIBDIRS) $(LIBS))
 
 $(TARGET_STRIPPED): $(TARGET)
 	@cp -f "$(TARGET)" "$@"

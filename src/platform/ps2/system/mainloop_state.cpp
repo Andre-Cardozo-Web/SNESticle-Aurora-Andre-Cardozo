@@ -556,6 +556,134 @@ static Bool _MainLoopSramWriteFile(const Char *pPath, Uint8 *pData, Uint32 nByte
     return nWritten == nBytes && bOK ? TRUE : FALSE;
 }
 
+/* AURORA_SGB_GB_SAVEDATA_V0_3_20260904
+ * Variable-size Game Boy savedata storage. Separate from the exact-size
+ * SRAM reader used by existing systems. The byte stream is mGBA's complete
+ * VFile (SRAM plus RTC/mapper footer), never a raw SRAM slice.
+ */
+#define MAINLOOP_GB_SAVEDATA_MAX (1024U * 1024U)
+
+static Bool _MainLoopGBEnsureDirectory(const Char *pRoot, Bool bMemCard)
+{
+    Char Directory[512];
+    if (!pRoot || !*pRoot) return FALSE;
+    if (!bMemCard && !_MainLoopSramEnsureOneDir(pRoot)) return FALSE;
+    if (snprintf(Directory, sizeof(Directory), "%s/GB", pRoot) >= (int)sizeof(Directory)) return FALSE;
+    if (_MainLoopSramEnsureOneDir(Directory)) return TRUE;
+    if (bMemCard) {
+        int r = MemCardCreateSave((char *)pRoot, _MainLoop_SaveTitle, TRUE);
+        if (r < 0) return FALSE;
+    }
+    return _MainLoopSramEnsureOneDir(Directory);
+}
+
+static Bool _MainLoopGBBuildSavePath(Char *pPath, Int32 nPathBytes,
+                                     const Char *pRoot, Bool bCopiedMcName)
+{
+    Char Directory[512], SaveName[256];
+    Int32 nBaseMax;
+    int n;
+    if (!pPath || nPathBytes <= 0 || !pRoot || !*pRoot) return FALSE;
+    n = snprintf(Directory, sizeof(Directory), "%s/GB", pRoot);
+    if (n < 0 || n >= (int)sizeof(Directory)) return FALSE;
+    nBaseMax = bCopiedMcName ? (32 - 4) : (PathGetMaxFileNameLength(Directory) - 4);
+    if (nBaseMax <= 0) return FALSE;
+    PathTruncFileName(SaveName, _RomName, nBaseMax);
+    n = snprintf(pPath, (size_t)nPathBytes, "%s/%s.sav", Directory, SaveName);
+    return n >= 0 && n < nPathBytes ? TRUE : FALSE;
+}
+
+static Bool _MainLoopGBReadVariable(const Char *pPath, Uint8 **ppData, Uint32 *pBytes)
+{
+    struct stat st;
+    FILE *f;
+    Uint8 *p;
+    size_t got;
+    if (!ppData || !pBytes) return FALSE;
+    *ppData = NULL; *pBytes = 0;
+    if (stat(pPath, &st) != 0 || st.st_size <= 0 ||
+        (Uint64)st.st_size > MAINLOOP_GB_SAVEDATA_MAX) return FALSE;
+    p = (Uint8 *)malloc((size_t)st.st_size);
+    if (!p) return FALSE;
+    f = fopen(pPath, "rb");
+    if (!f) { free(p); return FALSE; }
+    got = fread(p, 1, (size_t)st.st_size, f);
+    fclose(f);
+    if (got != (size_t)st.st_size) { free(p); return FALSE; }
+    *ppData = p; *pBytes = (Uint32)st.st_size;
+    return TRUE;
+}
+
+static Bool _MainLoopLoadGBSavedataFrom(MainLoopSramDeviceE eDevice,
+                                        Uint8 **ppData, Uint32 *pBytes)
+{
+    const Char *pRoot = _MainLoopSramRoot(eDevice);
+    Char Path[1024], Alias[1024];
+    if (_MainLoopGBBuildSavePath(Path, sizeof(Path), pRoot, FALSE) &&
+        _MainLoopGBReadVariable(Path, ppData, pBytes)) {
+        ConPrint("GB savedata loaded: %s (%u bytes)\n", Path, (unsigned)*pBytes);
+        return TRUE;
+    }
+    if (eDevice == MAINLOOP_SRAMDEVICE_USB &&
+        _MainLoopGBBuildSavePath(Alias, sizeof(Alias), pRoot, TRUE) &&
+        strcmp(Alias, Path) != 0 && _MainLoopGBReadVariable(Alias, ppData, pBytes)) {
+        ConPrint("GB savedata loaded (MC-copy alias): %s (%u bytes)\n", Alias, (unsigned)*pBytes);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+Bool MainLoopLoadGBSavedata(Uint8 **ppData, Uint32 *pBytes)
+{
+    if (!ppData || !pBytes) return FALSE;
+    *ppData = NULL; *pBytes = 0;
+    if (_MainLoop_SramDevice == MAINLOOP_SRAMDEVICE_USB)
+        return _MainLoopSramUsbReady() ? _MainLoopLoadGBSavedataFrom(MAINLOOP_SRAMDEVICE_USB, ppData, pBytes) : FALSE;
+    if (_MainLoop_SramDevice == MAINLOOP_SRAMDEVICE_MEMCARD)
+        return _MainLoopLoadGBSavedataFrom(MAINLOOP_SRAMDEVICE_MEMCARD, ppData, pBytes);
+    if (_MainLoopSramUsbReady() && _MainLoopLoadGBSavedataFrom(MAINLOOP_SRAMDEVICE_USB, ppData, pBytes)) return TRUE;
+    return _MainLoopLoadGBSavedataFrom(MAINLOOP_SRAMDEVICE_MEMCARD, ppData, pBytes);
+}
+
+Bool MainLoopSaveGBSavedata(const Uint8 *pData, Uint32 nBytes)
+{
+    MainLoopSramDeviceE eDevice = _MainLoop_SramDevice;
+    const Char *pRoot;
+    Bool bMemCard;
+    Char Path[1024];
+    if ((!pData && nBytes) || nBytes > MAINLOOP_GB_SAVEDATA_MAX) return FALSE;
+    if (!nBytes) return TRUE;
+    if (eDevice == MAINLOOP_SRAMDEVICE_AUTO)
+        eDevice = _MainLoopSramUsbReady() ? MAINLOOP_SRAMDEVICE_USB : MAINLOOP_SRAMDEVICE_MEMCARD;
+    if (eDevice == MAINLOOP_SRAMDEVICE_USB && !_MainLoopSramUsbReady()) return FALSE;
+    pRoot = _MainLoopSramRoot(eDevice);
+    bMemCard = eDevice == MAINLOOP_SRAMDEVICE_MEMCARD ? TRUE : FALSE;
+    if (!_MainLoopGBEnsureDirectory(pRoot, bMemCard) ||
+        !_MainLoopGBBuildSavePath(Path, sizeof(Path), pRoot, FALSE) ||
+        !_MainLoopSramWriteFile(Path, (Uint8 *)pData, nBytes)) return FALSE;
+    ConPrint("GB savedata saved: %s (%u bytes)\n", Path, (unsigned)nBytes);
+    return TRUE;
+}
+
+void MainLoopFreeGBSavedata(Uint8 *pData) { free(pData); }
+
+static Bool _MainLoopSaveGBSavedataToDevice(MainLoopSramDeviceE eDevice,
+                                                const Uint8 *pData, Uint32 nBytes)
+{
+    const Char *pRoot = _MainLoopSramRoot(eDevice);
+    Bool bMemCard = eDevice == MAINLOOP_SRAMDEVICE_MEMCARD ? TRUE : FALSE;
+    Char Path[1024];
+    if ((!pData && nBytes) || !nBytes || nBytes > MAINLOOP_GB_SAVEDATA_MAX) return FALSE;
+    if (eDevice == MAINLOOP_SRAMDEVICE_USB && !_MainLoopSramUsbReady()) return FALSE;
+    if (!_MainLoopGBEnsureDirectory(pRoot, bMemCard) ||
+        !_MainLoopGBBuildSavePath(Path, sizeof(Path), pRoot, FALSE) ||
+        !_MainLoopSramWriteFile(Path, (Uint8 *)pData, nBytes)) return FALSE;
+    ConPrint("GB savedata saved: %s (%u bytes)\n", Path, (unsigned)nBytes);
+    return TRUE;
+}
+
+
+
 
 
 /* AURORA_SWC_CART_SRAM_MEMORY_FINAL_V5_3_20260901
@@ -1083,6 +1211,8 @@ Bool _MainLoopHasSRAM()
 {
     if (!_pSystem)
         return FALSE;
+    if (_pSystem == _pSnes && _pSnes && _pSnes->IsSuperGameBoy())
+        return _pSnes->GetSuperGameBoySavedataBytes() > 0 ? TRUE : FALSE;
     if (_pSystem->GetSRAMBytes() > 0)
         return TRUE;
     /* AURORA_QN_TURBOFILE_SAVE_V2_20260828: only advertise external
@@ -1114,6 +1244,26 @@ static Bool _MainLoopSaveSRAMTo(MainLoopSramDeviceE eDevice, Bool bSync)
 
     /* AURORA_RUNTIME_LEAN_V1_MCSAVE_20260824: bSync only selected behavior in the retired async path. */
     (void)bSync;
+
+    if (_pSystem == _pSnes && _pSnes && _pSnes->IsSuperGameBoy())
+    {
+        Uint32 nBytes = _pSnes->GetSuperGameBoySavedataBytes();
+        Uint32 actual = 0;
+        Uint8 *pData;
+        if (!nBytes) return FALSE;
+        pData = (Uint8 *)malloc(nBytes);
+        if (!pData) return FALSE;
+        bOK = _pSnes->ExportSuperGameBoySavedata(pData, nBytes, &actual) &&
+              actual == nBytes &&
+              _MainLoopSaveGBSavedataToDevice(eDevice, pData, nBytes);
+        free(pData);
+        if (bOK)
+        {
+            _pSnes->ClearSuperGameBoySavedataDirty();
+            _MainLoop_SRAMUpdated = FALSE;
+        }
+        return bOK;
+    }
 
     if (nSramBytes > 0)
     {
@@ -1278,6 +1428,21 @@ static Bool _MainLoopLoadSRAMFrom(MainLoopSramDeviceE eDevice,
 
 void _MainLoopLoadSRAM()
 {
+    if (_pSystem == _pSnes && _pSnes && _pSnes->IsSuperGameBoy())
+    {
+        Uint8 *pData = NULL;
+        Uint32 nBytes = 0;
+        Bool loaded = MainLoopLoadGBSavedata(&pData, &nBytes);
+        Bool ok = _pSnes->LoadSuperGameBoySavedata(loaded ? pData : NULL,
+                                                    loaded ? nBytes : 0);
+        if (pData) MainLoopFreeGBSavedata(pData);
+        if (!ok) ConPrint("WARNING: could not attach SGB savedata backing\n");
+        _pSnes->ClearSuperGameBoySavedataDirty();
+        _MainLoop_SRAMUpdated = FALSE;
+        _MainLoop_SaveCounter = 0;
+        _bStateSaved = FALSE;
+        return;
+    }
     Int32 nSramBytes = _pSystem ? _pSystem->GetSRAMBytes() : 0;
     Uint8 *pSRAM = nSramBytes > 0 ? _pSystem->GetSRAMData() : NULL;
     Bool bLoaded = FALSE;
@@ -1374,6 +1539,10 @@ Bool _MainLoopForceCheckSRAM()
         }
     }
 
+    if (_pSystem == _pSnes && _pSnes && _pSnes->IsSuperGameBoy() &&
+        _pSnes->IsSuperGameBoySavedataDirty())
+        _MainLoop_SRAMUpdated = TRUE;
+
     /* AURORA_SWC_CART_SRAM_MEMORY_FINAL_V5_3_20260901
      * Game Pak SRAM writes mark themselves dirty immediately; no full second
      * SRAM checksum is added to menu entry or gameplay. */
@@ -1414,6 +1583,9 @@ Bool _MainLoopCheckSRAM()
        small periodic EE workload spike on large SRAM carts. */
     if (_pSystem == _pSnes)
     {
+        if (_pSnes && _pSnes->IsSuperGameBoy() && _pSnes->IsSuperGameBoySavedataDirty())
+            _MainLoop_SRAMUpdated = TRUE;
+
         /* AURORA_SNES_TURBOFILE_V4_20260829
          * External protocol writes already maintain a dirty boolean.
          * Keep the normal no-checksum SNES path, but expose that O(1)
@@ -1532,6 +1704,7 @@ Bool _MainLoopCheckSRAM()
 #define MAINLOOP_STATE_SYSTEM_SWC       6 /* AURORA_SWC_FLOPPY_V4_20260831 */
 #define MAINLOOP_STATE_SYSTEM_SEGACD    7 /* AURORA_CD_STATE_V1_SAFE_20260903 */
 #define MAINLOOP_STATE_SYSTEM_PCECD     8 /* AURORA_CD_STATE_V1_SAFE_20260903 */
+#define MAINLOOP_STATE_SYSTEM_SGB       9 /* AURORA_SGB_RUNTIME_V0_4_20260904 */
 #define MAINLOOP_STATE_RAW_BYTES \
     (sizeof(SnesStateT) > sizeof(NesStateT) \
         ? sizeof(SnesStateT) \
@@ -1625,6 +1798,12 @@ static Bool _MainLoopStateIsSwc()
     return (_pSystem == _pSnes && _pSnes &&
             _pSnes->IsSuperWildCard()) ? TRUE : FALSE;
 }
+/* AURORA_SGB_RUNTIME_V0_4_20260904 */
+static Bool _MainLoopStateIsSgb()
+{
+    return (_pSystem == _pSnes && _pSnes &&
+            _pSnes->IsSuperGameBoy()) ? TRUE : FALSE;
+}
 /* AURORA_SWC_FLOPPY_V4_20260831 */
 
 static void _MainLoopStateReleaseSegaScratch()
@@ -1650,7 +1829,7 @@ public:
     MainLoopSegaStateScratchGuard()
         : m_bActive((_pSystem == _pSega || _pSystem == _pPce ||
                      _pSystem == _pFds || /* AURORA_FCEUMM_FDS_V0_6_STATE */
-                     _MainLoopStateIsSwc()) ? TRUE : FALSE)
+                     _MainLoopStateIsSwc() || _MainLoopStateIsSgb()) ? TRUE : FALSE)
     {
     }
 
@@ -1688,7 +1867,7 @@ static Uint32 _MainLoopStateCompressedLimit(Uint32 nRawBytes)
 {
     if (_pSystem != _pSega && _pSystem != _pPce &&
         _pSystem != _pFds && /* AURORA_FCEUMM_FDS_V0_6_STATE */
-        !_MainLoopStateIsSwc())
+        !_MainLoopStateIsSwc() && !_MainLoopStateIsSgb())
         return (Uint32)sizeof(_MainLoop_StateCompressed);
 
     unsigned long long n =
@@ -1700,7 +1879,7 @@ static Uint8 *_MainLoopStateGetCompressedBuffer(Uint32 nNeed, Uint32 *pCapacity)
 {
     if (_pSystem != _pSega && _pSystem != _pPce &&
         _pSystem != _pFds && /* AURORA_FCEUMM_FDS_V0_6_STATE */
-        !_MainLoopStateIsSwc())
+        !_MainLoopStateIsSwc() && !_MainLoopStateIsSgb())
     {
         if (pCapacity) *pCapacity = (Uint32)sizeof(_MainLoop_StateCompressed);
         return _MainLoop_StateCompressed;
@@ -1737,11 +1916,17 @@ static Uint32 _MainLoopStateGetSystemId()
     if (_pSystem == _pPce)  return MAINLOOP_STATE_SYSTEM_PCE;
     if (_pSystem == _pFds)  return MAINLOOP_STATE_SYSTEM_FDS; /* AURORA_FCEUMM_FDS_V0_6_STATE */
     if (_MainLoopStateIsSwc()) return MAINLOOP_STATE_SYSTEM_SWC;
+    if (_MainLoopStateIsSgb()) return MAINLOOP_STATE_SYSTEM_SGB;
     return MAINLOOP_STATE_SYSTEM_SNES;
 }
 
 static Uint32 _MainLoopStateGetPayloadBytes()
 {
+    if (_MainLoopStateIsSgb())
+    {
+        Int32 nBytes = _pSnes->GetStateSize();
+        return nBytes > 0 ? (Uint32)nBytes : 0;
+    }
     if (_MainLoopStateIsSwc())
     {
         Int32 nBytes = _pSnes->GetStateSize();
@@ -1788,6 +1973,8 @@ static Uint32 _MainLoopStateGetPayloadBytes()
 
 static Uint8 *_MainLoopStateGetPayloadData()
 {
+    if (_MainLoopStateIsSgb())
+        return _MainLoopStateEnsureSegaStateData(_MainLoopStateGetPayloadBytes());
     if (_MainLoopStateIsSwc())
         return _MainLoopStateEnsureSegaStateData(
             _MainLoopStateGetPayloadBytes());
@@ -3014,6 +3201,17 @@ static Bool _MainLoopStateGetRomIdentity(
 {
     Uint8 *pRomData = NULL; /* AURORA_FCEUMM_FDS_V0_6_STATE */
     Uint32 nRomBytes;
+    if (_MainLoopStateIsSgb())
+    {
+        Uint32 crc = _pSnes->GetSuperGameBoyGameCRC();
+        Uint32 bytes = _pSnes->GetSuperGameBoyGameBytes();
+        if (!bytes) return FALSE;
+        _MainLoop_StateRomCRC = crc;
+        _MainLoop_StateRomCRCValid = TRUE;
+        *puCRC = crc; *pnBytes = bytes; *puFlags = 0x53474204u;
+        return TRUE;
+    }
+
     if (_MainLoopStateIsSwc())
     {
         Char BaseName[256];
@@ -4048,7 +4246,7 @@ Bool _MainLoopSaveState()
             return FALSE;
         }
     }
-    else if (_MainLoopStateIsSwc())
+    else if (_MainLoopStateIsSwc() || _MainLoopStateIsSgb())
     {
         if (!_pSnes->SaveStateChecked(pStateData, (Int32)nStateBytes))
         {
