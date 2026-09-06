@@ -18,3 +18,23 @@
 	path = src/third_party/mgba
 	url = https://github.com/itsveenee/mgba.git
 	branch = master
+[submodule "quicknes"]
+	path = src/third_party/quicknes
+	url = https://github.com/itsveenee/QuickNES_Core.git
+	branch = master
+[submodule "picodrive"]
+	path = src/third_party/picodrive
+	url = https://github.com/itsveenee/picodrive.git
+	branch = master
+[submodule "beetle-pce-fast"]
+	path = src/third_party/beetle-pce-fast
+	url = https://github.com/itsveenee/beetle-pce-fast-libretro.git
+	branch = master
+[submodule "fceumm-fds"]
+	path = src/third_party/fceumm-fds
+	url = https://github.com/itsveenee/Fceumm-PS2.git
+	branch = master
+[submodule "mgba"]
+	path = src/third_party/mgba
+	url = https://github.com/itsveenee/mgba.git
+	branch = master

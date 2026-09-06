@@ -55,6 +55,10 @@ Aurora also contains or integrates InfoNES, miniz, libxmp-lite, PS2SDK-related l
 
 
 
+<!-- AURORA_MGBA_LICENSE_V1_20260906 -->
 ### mGBA (Game Boy core for Super Game Boy)
 
-Aurora links the pinned mGBA Game Boy/SM83 core only behind its Super Game Boy ICD2 bridge. mGBA is licensed under MPL-2.0; see `src/third_party/mgba/LICENSE`.
+Aurora integrates the pinned `itsveenee/mgba` Git submodule at `src/third_party/mgba` for the Game Boy/SM83 side of the Super Game Boy ICD2 bridge. The submodule remains a separately tracked upstream-derived component; preserve its original source-file copyright and license notices.
+
+mGBA is licensed under the Mozilla Public License 2.0 (MPL-2.0). The complete upstream license text remains at `src/third_party/mgba/LICENSE` and is mirrored verbatim at `LICENSES/mGBA-MPL-2.0.txt`. MPL-covered source files and modifications remain subject to the MPL-2.0 requirements.
+
