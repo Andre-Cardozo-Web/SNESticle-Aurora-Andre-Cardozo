@@ -167,6 +167,21 @@ void GSK_Init(int width, int height,
         _gsk_vck              = 1;                // Clock de vídeo digital em velocidade máxima (1:1)
         break;
 
+        // Configuração do barramento de resoluções com injeção 1080P progressiva estável (Estilo GSM)
+    switch (g_GskVideoMode)
+    {
+    // Configuração do barramento de resoluções com injeção 1080P progressiva estável (Estilo GSM)
+    switch (g_GskVideoMode)
+    {
+    case GSK_VIDMODE_1080I:
+        _pGsGlobal->Mode      = 0x53;             // Código de registro bruto do GSM para HDTV 1080P @ 60Hz
+        _pGsGlobal->Interlace = GS_NONINTERLACED; // Desliga o entrelaçamento (Varredura Progressiva Pura)
+        _pGsGlobal->Field     = GS_FRAME;         // Renderiza quadros cheios eliminando trepidações
+        _gsk_fb_width         = 640;              // Resolução horizontal ideal para a VRAM do PS2
+        _gsk_fb_height        = 480;              // Resolução vertical ideal (proporção perfeita 16:9)
+        _gsk_vck              = 1;                // Clock de vídeo digital em velocidade máxima (1:1)
+        break;
+
     case GSK_VIDMODE_240P:
         /*
          * NTSC 256x240 progressive / PAL 256x240 inside a 288p raster.
