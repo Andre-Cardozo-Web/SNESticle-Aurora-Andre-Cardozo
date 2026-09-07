@@ -14,18 +14,18 @@ static bool s_DirectClutResident = false;
 static Uint32 s_DirectFrameSerial = 1;
 static Uint32 s_DirectUploadSerial = 0;
 static Uint8 s_VideoBuffer[256 * 240];
-static Uint32 s_GsPalette[256];
+static Uint32 s_GsPalette;
 bool FceummFdsBridge_DrawDirectGs(Uint32 auroraOutBaseTBP, Int32 logicalY, Float32 intensity) {
     if (!auroraOutBaseTBP || !s_GameLoaded || !s_DirectReady) return false;
     Uint32 texTBP = auroraOutBaseTBP + 0x400;
     Uint32 clutTBP = auroraOutBaseTBP + 0x580;
     const Uint8 *uploadPixels = s_VideoBuffer;
     if (s_DirectUploadSerial != s_DirectFrameSerial) {
-        GPPrimUploadTexture((int)texTBP, 320, 0, 0, GS_PSMT8, uploadPixels, 256, 240);
+        GPPrimUploadTexture((int)texTBP, 320, 0, 0, GS_PSMT8, (void *)uploadPixels, 256, 240);
         s_DirectUploadSerial = s_DirectFrameSerial;
     }
     if (!s_DirectClutResident) {
-        GPPrimUploadTexture((int)clutTBP, 64, 0, 0, GS_PSMCT32, s_GsPalette, 16, 16);
+        GPPrimUploadTexture((int)clutTBP, 64, 0, 0, GS_PSMCT32, (void *)s_GsPalette, 16, 16);
         s_DirectClutResident = true;
     }
     GPPrimSetTex(texTBP, 320, 9, 8, GS_PSMT8, clutTBP, 64, GS_PSMCT32, 0);
