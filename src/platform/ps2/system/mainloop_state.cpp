@@ -935,6 +935,157 @@ static Bool _MainLoopSaveSwcCartSRAMTo(
     return TRUE;
 }
 
+
+/* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_STATE_CPP
+ * One independent 1 MiB Type-1 Memory Pack image per slotted SNES ROM.
+ * Example: Derby Stallion 96.srm (if battery-backed RAM exists) plus
+ *          Derby Stallion 96.mpk (Satellaview Memory Pack flash). */
+static void _MainLoopBSXMemoryPackBuildPath(Char *pPath, Int32 nPathBytes,
+                                            const Char *pRoot)
+{
+    Char Directory[512];
+    Char SaveName[256];
+    Int32 nBaseMax;
+
+    snprintf(Directory, sizeof(Directory), "%s/SNES", pRoot);
+    nBaseMax = PathGetMaxFileNameLength(Directory) - 4; /* .mpk */
+    if (nBaseMax < 1) nBaseMax = 1;
+    PathTruncFileName(SaveName, _RomName, nBaseMax);
+    snprintf(pPath, nPathBytes, "%s/%s.mpk", Directory, SaveName);
+}
+
+/* AURORA_BSXSLOT_MEMORY_PACK_V1_1_PERSIST_FIX_20260906
+ * A Memory Pack is already backed by a live 1 MiB allocation. Avoid the
+ * generic transactional SRAM reader's second 1 MiB temporary allocation.
+ * Exact-size validation happens before the read; a short/error read restores
+ * FF so AUTO can safely fall back to the other save device. */
+static Bool _MainLoopReadBSXMemoryPackFile(const Char *pPath,
+                                           Uint8 *pData, Uint32 nBytes)
+{
+    struct stat Status;
+    FILE *pFile;
+    Uint32 done = 0;
+
+    if (!pPath || !*pPath || !pData ||
+        nBytes != (Uint32)SNES_BSX_MEMORY_PACK_BYTES)
+        return FALSE;
+
+    if (stat(pPath, &Status) != 0 || S_ISDIR(Status.st_mode) ||
+        (Uint32)Status.st_size != nBytes)
+        return FALSE;
+
+    pFile = fopen(pPath, "rb");
+    if (!pFile)
+        return FALSE;
+
+    while (done < nBytes)
+    {
+        size_t got = fread(pData + done, 1, (size_t)(nBytes - done), pFile);
+        if (!got)
+            break;
+        done += (Uint32)got;
+    }
+
+    if (fclose(pFile) != 0 || done != nBytes)
+    {
+        memset(pData, 0xFF, nBytes);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static Bool _MainLoopLoadBSXMemoryPackFrom(MainLoopSramDeviceE eDevice)
+{
+    const Char *pRoot = _MainLoopSramRoot(eDevice);
+    Uint8 *pData;
+    Int32 nBytes;
+    Char Path[1024];
+
+    if (_pSystem != _pSnes || !_pSnes || !_pSnes->HasBSXMemoryPack())
+        return FALSE;
+
+    pData = _pSnes->GetBSXMemoryPackData();
+    nBytes = _pSnes->GetBSXMemoryPackBytes();
+    if (!pData || nBytes != SNES_BSX_MEMORY_PACK_BYTES)
+        return FALSE;
+
+    _MainLoopBSXMemoryPackBuildPath(Path, sizeof(Path), pRoot);
+    if (!_MainLoopReadBSXMemoryPackFile(Path, pData, (Uint32)nBytes))
+        return FALSE;
+
+    if (!_pSnes->LoadBSXMemoryPack(pData, (Uint32)nBytes))
+        return FALSE;
+
+    ConPrint("BS-X Memory Pack loaded: %s\n", Path);
+    return TRUE;
+}
+
+static void _MainLoopLoadBSXMemoryPack(void)
+{
+    Bool bLoaded = FALSE;
+
+    if (_pSystem != _pSnes || !_pSnes || !_pSnes->HasBSXMemoryPack())
+        return;
+
+    if (_MainLoop_SramDevice == MAINLOOP_SRAMDEVICE_USB)
+    {
+        if (_MainLoopSramUsbReady())
+            bLoaded = _MainLoopLoadBSXMemoryPackFrom(MAINLOOP_SRAMDEVICE_USB);
+    }
+    else if (_MainLoop_SramDevice == MAINLOOP_SRAMDEVICE_MEMCARD)
+    {
+        bLoaded = _MainLoopLoadBSXMemoryPackFrom(MAINLOOP_SRAMDEVICE_MEMCARD);
+    }
+    else
+    {
+        if (_MainLoopSramUsbReady())
+            bLoaded = _MainLoopLoadBSXMemoryPackFrom(MAINLOOP_SRAMDEVICE_USB);
+        if (!bLoaded)
+            bLoaded = _MainLoopLoadBSXMemoryPackFrom(MAINLOOP_SRAMDEVICE_MEMCARD);
+    }
+
+    _pSnes->ClearBSXMemoryPackDirty();
+    ConPrint("BS-X Memory Pack backing: %s\n",
+             bLoaded ? "loaded" : "blank/erased");
+}
+
+static Bool _MainLoopSaveBSXMemoryPackTo(MainLoopSramDeviceE eDevice)
+{
+    const Char *pRoot = _MainLoopSramRoot(eDevice);
+    const Bool bMemCard =
+        eDevice == MAINLOOP_SRAMDEVICE_MEMCARD ? TRUE : FALSE;
+    Uint8 *pData;
+    Int32 nBytes;
+    Char Path[1024];
+
+    if (_pSystem != _pSnes || !_pSnes ||
+        !_pSnes->HasBSXMemoryPack() || !_pSnes->IsBSXMemoryPackDirty())
+        return TRUE;
+
+    pData = _pSnes->GetBSXMemoryPackData();
+    nBytes = _pSnes->GetBSXMemoryPackBytes();
+    if (!pData || nBytes != SNES_BSX_MEMORY_PACK_BYTES ||
+        !_MainLoopSramEnsureSystemDirectory(pRoot, bMemCard))
+        return FALSE;
+
+    _MainLoopBSXMemoryPackBuildPath(Path, sizeof(Path), pRoot);
+    if (!_MainLoopSramWriteFile(Path, pData, (Uint32)nBytes))
+        return FALSE;
+
+    _pSnes->ClearBSXMemoryPackDirty();
+    ConPrint("BS-X Memory Pack saved: %s\n", Path);
+    /* AURORA_BSXSLOT_MEMORY_PACK_V1_2_IO_WATCH_SGB_STATUS_20260906: cold-path summary only; never logs from flash accesses. */
+    ConPrint("[BSX/MPK] io save: R=%u W=%u prog=%u erase=%u chip=%u status=%u vendor=%u\n",
+             (unsigned)_pSnes->GetBSXMemoryPackReadCount(),
+             (unsigned)_pSnes->GetBSXMemoryPackWriteCount(),
+             (unsigned)_pSnes->GetBSXMemoryPackProgramCount(),
+             (unsigned)_pSnes->GetBSXMemoryPackBlockEraseCount(),
+             (unsigned)_pSnes->GetBSXMemoryPackChipEraseCount(),
+             (unsigned)_pSnes->GetBSXMemoryPackStatusReadCount(),
+             (unsigned)_pSnes->GetBSXMemoryPackVendorReadCount());
+    return TRUE;
+}
+
 /* AURORA_QN_TURBOFILE_SAVE_V2_20260828
  * The original ASCII Turbo File is one 8 KiB expansion-port memory unit,
  * shared by compatible Famicom software. Keep one physical-style file in
@@ -1215,6 +1366,8 @@ Bool _MainLoopHasSRAM()
         return _pSnes->GetSuperGameBoySavedataBytes() > 0 ? TRUE : FALSE;
     if (_pSystem->GetSRAMBytes() > 0)
         return TRUE;
+    if (_pSystem == _pSnes && _pSnes && _pSnes->HasBSXMemoryPack())
+        return TRUE; /* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_STATE_CPP */
     /* AURORA_QN_TURBOFILE_SAVE_V2_20260828: only advertise external
      * persistence after the Turbo File has actually been written. */
     if (_pSystem == _pNes &&
@@ -1329,6 +1482,14 @@ static Bool _MainLoopSaveSRAMTo(MainLoopSramDeviceE eDevice, Bool bSync)
     {
         bAny = TRUE;
         if (!_MainLoopSaveSnesTurboFileTo(eDevice))
+            bOK = FALSE;
+    }
+
+    if (_pSystem == _pSnes && _pSnes &&
+        _pSnes->HasBSXMemoryPack() && _pSnes->IsBSXMemoryPackDirty())
+    {
+        bAny = TRUE;
+        if (!_MainLoopSaveBSXMemoryPackTo(eDevice))
             bOK = FALSE;
     }
 
@@ -1498,7 +1659,10 @@ void _MainLoopLoadSRAM()
     }
 
     if (_pSystem == _pSnes)
+    {
         _MainLoopLoadSnesTurboFile();
+        _MainLoopLoadBSXMemoryPack(); /* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_STATE_CPP */
+    }
 
     _MainLoop_SaveCounter = 0;
     _bStateSaved = FALSE;
@@ -1569,6 +1733,10 @@ Bool _MainLoopForceCheckSRAM()
         SnesTurboFileDirty())
         _MainLoop_SRAMUpdated = TRUE;
 
+    if (_pSystem == _pSnes && _pSnes &&
+        _pSnes->HasBSXMemoryPack() && _pSnes->IsBSXMemoryPackDirty())
+        _MainLoop_SRAMUpdated = TRUE; /* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_STATE_CPP */
+
     return TRUE;
 }
 
@@ -1592,6 +1760,10 @@ Bool _MainLoopCheckSRAM()
          * dirty state to the existing deterministic menu-save flow. */
         if (SnesTurboFileEnabled() && SnesTurboFileDirty())
             _MainLoop_SRAMUpdated = TRUE;
+
+        if (_pSnes && _pSnes->HasBSXMemoryPack() &&
+            _pSnes->IsBSXMemoryPackDirty())
+            _MainLoop_SRAMUpdated = TRUE; /* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_STATE_CPP */
 
         /* AURORA_SWC_CART_SRAM_MEMORY_FINAL_V5_3_20260901: O(1) physical-cart dirty state. */
         if (_pSnes && _pSnes->IsSuperWildCard() &&

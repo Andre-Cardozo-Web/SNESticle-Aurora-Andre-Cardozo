@@ -45,6 +45,8 @@ enum SNRomMappingE
 	SNROM_MAPPING_LOROM,
 	SNROM_MAPPING_HIROM,
 	SNROM_MAPPING_EXLOROM,	// LoROM > 4MB (Jumbo / ExLoROM, ate 8MB)
+	SNROM_MAPPING_BSCLOROM,
+	SNROM_MAPPING_BSCHIROM,
 
 	SNROM_MAPPING_NUM
 };
@@ -65,6 +67,10 @@ enum SNRomMappingE
 /* AURORA_UPSTREAM_20260827_DSP1_OP28_REVISION_V1 */
 #define SNROM_FLAG_DSP1_ORIGINAL_OP28 0x2000
 #define SNROM_FLAG_SA1     0x4000 /* AURORA_SA1_V1_REFERENCE_LOGIC_20260902 */
+/* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNROM_H
+ * Standalone Satellaview slotted cartridges expose an 8M Memory Pack
+ * in addition to ordinary battery RAM (when the board has it). */
+#define SNROM_FLAG_BSXSLOT 0x8000
 /* AURORA_SA1_V1_REFERENCE_LOGIC_20260902: second native SNCpuT + SA-1 MMIO/MMC/DMA. */
 
 extern Uint32 g_FakeSRAMSize;

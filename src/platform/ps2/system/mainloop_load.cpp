@@ -692,6 +692,46 @@ void _MainLoopUnloadRom()
         }
     }
 
+    /* AURORA_BSXSLOT_MEMORY_PACK_V1_2_IO_WATCH_SGB_STATUS_20260906
+     * One cold-path line at ROM lifetime end. The hot Read/Write paths only
+     * increment 32-bit counters, so diagnostic visibility does not turn every
+     * Memory Pack access into console/file I/O. */
+    if (_pSystem == _pSnes && _pSnes && _pSnes->HasBSXMemoryPack())
+    {
+        ConPrint("[BSX/MPK] io unload: R=%u W=%u prog=%u erase=%u chip=%u status=%u vendor=%u dirty=%d\n",
+                 (unsigned)_pSnes->GetBSXMemoryPackReadCount(),
+                 (unsigned)_pSnes->GetBSXMemoryPackWriteCount(),
+                 (unsigned)_pSnes->GetBSXMemoryPackProgramCount(),
+                 (unsigned)_pSnes->GetBSXMemoryPackBlockEraseCount(),
+                 (unsigned)_pSnes->GetBSXMemoryPackChipEraseCount(),
+                 (unsigned)_pSnes->GetBSXMemoryPackStatusReadCount(),
+                 (unsigned)_pSnes->GetBSXMemoryPackVendorReadCount(),
+                 _pSnes->IsBSXMemoryPackDirty() ? 1 : 0);
+    }
+
+    /* AURORA_BSXSLOT_MEMORY_PACK_V1_1_PERSIST_FIX_20260906
+     * Standalone BSC/SA-1 slotted carts own a separate 1 MiB Memory Pack.
+     * Flush a dirty pack before SetRom(NULL), while _RomName and the backing
+     * still identify the departing game. Ordinary SNES/SGB/copier paths are
+     * untouched; a slotted game may own both <game>.srm and <game>.mpk. */
+    if (_pSystem == _pSnes && _pSnes &&
+        !_pSnes->IsSuperWildCard() &&
+        !_pSnes->IsSuperGameBoy() &&
+        _pSnes->HasBSXMemoryPack() &&
+        _pSnes->IsBSXMemoryPackDirty())
+    {
+        (void)_MainLoopForceCheckSRAM();
+        {
+            Bool bSaved = _MainLoopSaveSRAM(TRUE);
+            ConPrint("BS-X Memory Pack unload flush: %s\n",
+                     bSaved ? "saved" : "FAILED");
+            MainLoopStatusPrintf(
+                bSaved ? 120 : 240,
+                bSaved ? "Memory Pack saved."
+                       : "WARNING: Memory Pack save failed!");
+        }
+    }
+
     if (_pSystem == _pSnes && _pSnes && _pSnes->IsSuperGameBoy())
     {
         (void)_MainLoopForceCheckSRAM();
@@ -3300,6 +3340,11 @@ static Bool _MainLoopBootSuperGameBoy(const Uint8 *pGbData, Uint32 nGbBytes,
         _fbTexture[0]->Clear();
         TextureUpload(&_OutTex, _fbTexture[0]->GetLinePtr(0));
     }
+    /* SGB ready: do not let the preboot "Loading BIOS and game file..."
+       survive for its original 30-second status timeout. Internal ConPrint
+       breadcrumbs remain untouched. */
+    _MainLoop_StatusCount = 0;
+    _MainLoop_StatusStr[0] = 0;
     return TRUE;
 }
 

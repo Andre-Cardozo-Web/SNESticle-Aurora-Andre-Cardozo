@@ -36,6 +36,220 @@ Uint32 SnesAudioGetRate(void)
     return SNSPCDSP_SAMPLERATE;
 }
 
+
+/* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNES_CPP
+ * 8M Memory Pack flash command set, modelled after the bsnes/ares Type-1
+ * device: erased bytes are FF, programming only changes 1 -> 0, 20 D0 erases
+ * a 64 KiB block, A7 D0 erases the chip, and status/vendor reads are stateful. */
+SNBSXMemoryPack::SNBSXMemoryPack()
+{
+    m_pData = NULL;
+    m_bAttached = FALSE;
+    m_bDirty = FALSE;
+    ResetProtocol();
+    ResetIOStats(); /* AURORA_BSXSLOT_MEMORY_PACK_V1_2_IO_WATCH_SGB_STATUS_20260906 */
+}
+
+SNBSXMemoryPack::~SNBSXMemoryPack()
+{
+    if (m_pData)
+        free(m_pData);
+    m_pData = NULL;
+}
+
+Bool SNBSXMemoryPack::AttachBlank()
+{
+    if (!m_pData)
+        m_pData = (Uint8 *)malloc(SNES_BSX_MEMORY_PACK_BYTES);
+    if (!m_pData)
+    {
+        m_bAttached = FALSE;
+        return FALSE;
+    }
+
+    memset(m_pData, 0xFF, SNES_BSX_MEMORY_PACK_BYTES);
+    m_bAttached = TRUE;
+    m_bDirty = FALSE;
+    ResetProtocol();
+    ResetIOStats();
+    return TRUE;
+}
+
+void SNBSXMemoryPack::Detach()
+{
+    m_bAttached = FALSE;
+    m_bDirty = FALSE;
+    ResetProtocol();
+}
+
+void SNBSXMemoryPack::ResetProtocol()
+{
+    m_uCommand = 0;
+    m_bCSR = FALSE;
+    m_bESR = FALSE;
+    m_bVendorInfo = FALSE;
+    m_bWriteByte = FALSE;
+}
+
+void SNBSXMemoryPack::ResetIOStats()
+{
+    m_uReadCount = 0;
+    m_uWriteCount = 0;
+    m_uProgramCount = 0;
+    m_uBlockEraseCount = 0;
+    m_uChipEraseCount = 0;
+    m_uStatusReadCount = 0;
+    m_uVendorReadCount = 0;
+}
+
+Bool SNBSXMemoryPack::Load(const Uint8 *pData, Uint32 nBytes)
+{
+    if (!m_bAttached || !m_pData || !pData ||
+        nBytes != (Uint32)SNES_BSX_MEMORY_PACK_BYTES)
+        return FALSE;
+
+    if (pData != m_pData)
+        memcpy(m_pData, pData, SNES_BSX_MEMORY_PACK_BYTES);
+    m_bDirty = FALSE;
+    ResetProtocol();
+    return TRUE;
+}
+
+Uint8 SNBSXMemoryPack::Read(Uint32 uAddr)
+{
+    Uint32 a;
+    if (!m_bAttached || !m_pData)
+        return 0xFF;
+
+    a = uAddr & (SNES_BSX_MEMORY_PACK_BYTES - 1);
+    ++m_uReadCount;
+
+    if (m_bESR)
+    {
+        switch (a & 0xFFFFu)
+        {
+            case 0x0002: ++m_uStatusReadCount; return 0xC0;
+            case 0x0004: ++m_uStatusReadCount; return 0x82;
+            default: break;
+        }
+    }
+
+    if (m_bCSR)
+    {
+        ++m_uStatusReadCount;
+        m_bCSR = FALSE;
+        return 0x80;
+    }
+
+    if (m_bVendorInfo &&
+        (a & 0x7FFFu) >= 0x7F00u && (a & 0x7FFFu) <= 0x7F13u)
+    {
+        ++m_uVendorReadCount;
+        switch (a & 0xFFu)
+        {
+            case 0x00: return 0x4D;
+            case 0x01: return 0x00;
+            case 0x02: return 0x50;
+            case 0x06: return 0x1A; /* Type 1, 1024 KiB => size code 10 */
+            default: return 0x00;
+        }
+    }
+
+    return m_pData[a];
+}
+
+void SNBSXMemoryPack::Write(Uint32 uAddr, Uint8 uData)
+{
+    Uint32 a;
+    if (!m_bAttached || !m_pData)
+        return;
+
+    a = uAddr & (SNES_BSX_MEMORY_PACK_BYTES - 1);
+    ++m_uWriteCount;
+
+    if (m_bWriteByte)
+    {
+        Uint8 uOld = m_pData[a];
+        Uint8 uNew = (Uint8)(uOld & uData);
+        m_bWriteByte = FALSE;
+        if (uNew != uOld)
+        {
+            m_pData[a] = uNew;
+            m_bDirty = TRUE;
+            ++m_uProgramCount;
+        }
+        return;
+    }
+
+    m_uCommand = (Uint16)((m_uCommand << 8) | uData);
+
+    switch (uData)
+    {
+        case 0x00:
+        case 0xFF:
+            m_bCSR = FALSE;
+            m_bESR = FALSE;
+            m_bVendorInfo = FALSE;
+            break;
+        case 0x10:
+        case 0x40:
+            m_bWriteByte = TRUE;
+            break;
+        case 0x70:
+            m_bCSR = TRUE;
+            break;
+        case 0x71:
+            m_bESR = TRUE;
+            break;
+        case 0x75:
+            m_bVendorInfo = TRUE;
+            break;
+        default:
+            break;
+    }
+
+    if (m_uCommand == 0x20D0u)
+    {
+        Uint32 uBase = a & 0xFF0000u;
+        Uint32 i;
+        Bool bChanged = FALSE;
+        for (i = 0; i < 0x10000u; ++i)
+        {
+            if (m_pData[uBase + i] != 0xFF)
+            {
+                bChanged = TRUE;
+                break;
+            }
+        }
+        if (bChanged)
+        {
+            memset(m_pData + uBase, 0xFF, 0x10000u);
+            m_bDirty = TRUE;
+            ++m_uBlockEraseCount;
+        }
+    }
+    else if (m_uCommand == 0xA7D0u)
+    {
+        Uint32 i;
+        Bool bChanged = FALSE;
+        for (i = 0; i < (Uint32)SNES_BSX_MEMORY_PACK_BYTES; ++i)
+        {
+            if (m_pData[i] != 0xFF)
+            {
+                bChanged = TRUE;
+                break;
+            }
+        }
+        if (bChanged)
+        {
+            memset(m_pData, 0xFF, SNES_BSX_MEMORY_PACK_BYTES);
+            m_bDirty = TRUE;
+            ++m_uChipEraseCount;
+        }
+    }
+}
+
+
 #ifndef SNES_HK97_SPC_BOOT
 #define SNES_HK97_SPC_BOOT 0
 #endif
@@ -1248,6 +1462,8 @@ SnesSystem::~SnesSystem()
 
 void SnesSystem::Reset()
 {
+	if (m_BSXMemory.IsAttached())
+		m_BSXMemory.ResetProtocol(); /* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNES_CPP */
 	/* AURORA_V7_FRONT_COPIER_MEDIA_CART_RESET_20260831
 	 * SNES RESET is a warm console reset, not copier power-on. Preserve the
 	 * Front copier's current System Mode (1=cart, 2/3=DRAM) and merely rebuild
@@ -1372,6 +1588,8 @@ void SnesSystem::Reset()
 
 void SnesSystem::SoftReset()
 {
+    if (m_BSXMemory.IsAttached())
+        m_BSXMemory.ResetProtocol(); /* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNES_CPP */
     /*
      * Soft reset:
      * reset the console hardware state without clearing RAM, SRAM,
@@ -1455,6 +1673,19 @@ void SnesSystem::SetSnesRom(SnesRom *pRom)
 #endif 
 	// set rom
 	m_pRom = pRom;
+
+	/* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNES_CPP
+	 * Attach an erased per-game pack before the board mapper is built.
+	 * mainloop_state.cpp loads this ROM's .mpk immediately afterwards. */
+	if (m_pRom && (m_pRom->m_Flags & SNROM_FLAG_BSXSLOT))
+	{
+		if (!m_BSXMemory.AttachBlank())
+			printf("[BSX] could not allocate 8M Memory Pack\n");
+	}
+	else
+	{
+		m_BSXMemory.Detach();
+	}
 
 	if (m_pRom)
 	{

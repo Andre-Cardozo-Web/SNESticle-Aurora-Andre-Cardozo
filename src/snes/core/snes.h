@@ -43,6 +43,62 @@ extern "C" {
 void SnesAudioSetRate(Uint32 hz);
 Uint32 SnesAudioGetRate(void);
 
+
+/* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNES_H
+ * Nintendo 8M Memory Pack Type 1: 8 Mbit / 1 MiB flash.  It is intentionally
+ * separate from Game Pak SRAM so slotted cartridges can own both saves. */
+#define SNES_BSX_MEMORY_PACK_BYTES (1024 * 1024)
+
+class SNBSXMemoryPack
+{
+public:
+    SNBSXMemoryPack();
+    ~SNBSXMemoryPack();
+
+    Bool AttachBlank();
+    void Detach();
+    void ResetProtocol();
+    Bool IsAttached() const { return m_bAttached; }
+
+    Uint8 Read(Uint32 uAddr);
+    void Write(Uint32 uAddr, Uint8 uData);
+    Bool Load(const Uint8 *pData, Uint32 nBytes);
+
+    Uint8 *GetData() { return m_bAttached ? m_pData : NULL; }
+    Uint32 GetBytes() const
+        { return m_bAttached ? (Uint32)SNES_BSX_MEMORY_PACK_BYTES : 0; }
+    Bool Dirty() const { return m_bAttached && m_bDirty; }
+    void ClearDirty() { m_bDirty = FALSE; }
+
+    /* AURORA_BSXSLOT_MEMORY_PACK_V1_2_IO_WATCH_SGB_STATUS_20260906
+     * Cheap counters only. Read()/Write() never log or touch storage. */
+    void ResetIOStats();
+    Uint32 ReadCount() const { return m_uReadCount; }
+    Uint32 WriteCount() const { return m_uWriteCount; }
+    Uint32 ProgramCount() const { return m_uProgramCount; }
+    Uint32 BlockEraseCount() const { return m_uBlockEraseCount; }
+    Uint32 ChipEraseCount() const { return m_uChipEraseCount; }
+    Uint32 StatusReadCount() const { return m_uStatusReadCount; }
+    Uint32 VendorReadCount() const { return m_uVendorReadCount; }
+
+private:
+    Uint8 *m_pData;
+    Uint16 m_uCommand;
+    Bool m_bAttached;
+    Bool m_bDirty;
+    Bool m_bCSR;
+    Bool m_bESR;
+    Bool m_bVendorInfo;
+    Bool m_bWriteByte;
+    Uint32 m_uReadCount;
+    Uint32 m_uWriteCount;
+    Uint32 m_uProgramCount;
+    Uint32 m_uBlockEraseCount;
+    Uint32 m_uChipEraseCount;
+    Uint32 m_uStatusReadCount;
+    Uint32 m_uVendorReadCount;
+};
+
 class SnesSystem : public Emu::System
 {
 public:
@@ -54,6 +110,25 @@ public:
 
     Uint32	GetFrame() {return m_uFrame;}
     Uint8	*GetSRAM() {return m_SRam;}
+
+    /* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNES_H */
+    Bool HasBSXMemoryPack() const { return m_BSXMemory.IsAttached(); }
+    Int32 GetBSXMemoryPackBytes() const { return (Int32)m_BSXMemory.GetBytes(); }
+    Uint8 *GetBSXMemoryPackData() { return m_BSXMemory.GetData(); }
+    Bool LoadBSXMemoryPack(const Uint8 *pData, Uint32 nBytes)
+        { return m_BSXMemory.Load(pData, nBytes); }
+    Bool IsBSXMemoryPackDirty() const { return m_BSXMemory.Dirty(); }
+    void ClearBSXMemoryPackDirty() { m_BSXMemory.ClearDirty(); }
+    Uint8 ReadBSXMemoryPack(Uint32 uOffset) { return m_BSXMemory.Read(uOffset); }
+    void WriteBSXMemoryPack(Uint32 uOffset, Uint8 uData)
+        { m_BSXMemory.Write(uOffset, uData); }
+    Uint32 GetBSXMemoryPackReadCount() const { return m_BSXMemory.ReadCount(); }
+    Uint32 GetBSXMemoryPackWriteCount() const { return m_BSXMemory.WriteCount(); }
+    Uint32 GetBSXMemoryPackProgramCount() const { return m_BSXMemory.ProgramCount(); }
+    Uint32 GetBSXMemoryPackBlockEraseCount() const { return m_BSXMemory.BlockEraseCount(); }
+    Uint32 GetBSXMemoryPackChipEraseCount() const { return m_BSXMemory.ChipEraseCount(); }
+    Uint32 GetBSXMemoryPackStatusReadCount() const { return m_BSXMemory.StatusReadCount(); }
+    Uint32 GetBSXMemoryPackVendorReadCount() const { return m_BSXMemory.VendorReadCount(); }
 
     void 	SetRom(class Emu::Rom *pRom);
     void	SetSnesRom(SnesRom *pRom);
@@ -184,6 +259,7 @@ private:
 
 	SNSA1       m_SA1;      /* AURORA_SA1_V1_REFERENCE_LOGIC_20260902 */
 	Bool        m_bSA1IRQ;
+	SNBSXMemoryPack m_BSXMemory; /* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNES_H */
 
 	/* AURORA_SWC_FLOPPY_V1_20260831 */
 	SNSuperWildCard m_SWC;
@@ -234,6 +310,9 @@ private:
     static void SNCPU_TRAPFUNC WriteSGB(SNCpuT *pCpu, Uint32 uAddr, Uint8 uData);
     void MapSuperGameBoy();
     void SyncSuperGameBoy();
+    /* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNES_H */
+    static Uint8 SNCPU_TRAPFUNC ReadBSXSlot(SNCpuT *pCpu, Uint32 uAddr);
+    static void SNCPU_TRAPFUNC WriteBSXSlot(SNCpuT *pCpu, Uint32 uAddr, Uint8 uData);
 	static Uint8 SNCPU_TRAPFUNC ReadSA1BWRAM(SNCpuT *pCpu, Uint32 uAddr);
 	static void SNCPU_TRAPFUNC  WriteSA1BWRAM(SNCpuT *pCpu, Uint32 uAddr, Uint8 uData);
 	static Uint8 SNCPU_TRAPFUNC ReadSA1ROM(SNCpuT *pCpu, Uint32 uAddr);
@@ -252,6 +331,11 @@ private:
 	void	MapMem(struct SnesMemMapT *pMemMap);
 	void	MapMem(SNRomMappingE eRomMapping, Uint32 uFlags);
 	void	MapMemExLoRom(void);
+
+	void	MapBSCLoRom(void); /* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNES_H */
+	void	MapBSCHiRom(void);
+	Bool    ResolveBSXSlotAddress(Uint32 uAddr, Uint32 *pOffset) const;
+
 	void	MapSuperWildCard(void); /* AURORA_SWC_FLOPPY_V1_20260831 */
 	void	MapSuperWildCardDevice(struct SnesMemMapT *pMemMap);
 	void	MapSuperWildCardCoprocessor(void);

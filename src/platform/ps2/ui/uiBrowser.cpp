@@ -82,7 +82,9 @@ static Bool BrowserIsSramFileName(const Char *pName)
 
     return nLength >= 4 &&
            pName[nLength - 4] == '.' &&
-           !strcasecmp(pName + nLength - 3, "srm");
+           (!strcasecmp(pName + nLength - 3, "srm") ||
+            !strcasecmp(pName + nLength - 3, "sav") ||
+            !strcasecmp(pName + nLength - 3, "mpk"));
 }
 
 static Bool BrowserIsSmbPath(const Char *pPath)

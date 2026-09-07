@@ -771,6 +771,46 @@ SNRomInfoT *SnesRom::GetCartInfo(Uint32 uOffset)
 	return NULL;
 }
 
+
+/* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNROM_CPP
+ * Detect the standalone Satellaview slot from the extended-header signature
+ * used by reference emulators.  This identifies board hardware rather than
+ * filenames or title allow-lists. */
+static Bool _SNRomHasBSXSlot(const Uint8 *pRom, Uint32 nRomBytes,
+                             const SNRomInfoT *pInfo)
+{
+    const Uint8 *p;
+    Uint32 uOffset;
+    Uint8 uCode;
+
+    if (!pRom || !pInfo || !nRomBytes)
+        return FALSE;
+
+    p = (const Uint8 *)pInfo;
+    if (p < pRom)
+        return FALSE;
+    uOffset = (Uint32)(p - pRom);
+    if (uOffset < 14u || uOffset + sizeof(SNRomInfoT) > nRomBytes)
+        return FALSE;
+
+    if (p[-14] != 'Z' || p[-11] != 'J')
+        return FALSE;
+
+    /* The BS-X interface cartridge also has a physical slot, but its pack is
+     * routed by the separate BS-X MCC/PSRAM/receiver hardware.  Do not lie by
+     * treating that base unit as a BSC-LoROM game cartridge. */
+    if (!memcmp(pInfo->Title, "Satellaview BS-X     ", 21))
+        return FALSE;
+
+    uCode = p[-13];
+    if (!((uCode >= 'A' && uCode <= 'Z') ||
+          (uCode >= '0' && uCode <= '9')))
+        return FALSE;
+
+    return (pInfo->License == 0x33 ||
+            (p[-10] == 0x00 && p[-4] == 0x00)) ? TRUE : FALSE;
+}
+
 void SnesRom::SetCartInfo(SNRomInfoT *pCartInfo)
 {
 
@@ -1466,6 +1506,21 @@ if (m_pRomData && m_uRomBytes)
 #endif
 
 	SetCartInfo(pCartInfo);
+
+	/* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNROM_CPP
+	 * BSC-LoROM/BSC-HiROM are real cartridge maps.  SA-1 slotted carts keep
+	 * the SA-1 mapper because Super MMC $2220-$2223 selects their Memory Pack. */
+	if (_SNRomHasBSXSlot(m_pRomData, m_uRomBytes, pCartInfo))
+	{
+		m_Flags |= SNROM_FLAG_BSXSLOT;
+		if (!(m_Flags & SNROM_FLAG_SA1))
+		{
+			if (m_eMapping == SNROM_MAPPING_LOROM)
+				m_eMapping = SNROM_MAPPING_BSCLOROM;
+			else if (m_eMapping == SNROM_MAPPING_HIROM)
+				m_eMapping = SNROM_MAPPING_BSCHIROM;
+		}
+	}
 
 	// ---- ExLoROM (Jumbo LoROM): LoROM maior que 4MB ----
 	// Hacks grandes (ex.: SMW expandida pelo Lunar Magic) usam ExLoROM:

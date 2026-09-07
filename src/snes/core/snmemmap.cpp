@@ -92,6 +92,39 @@ static SnesMemMapT	_SnesMemMap_HiRom[]=
 };
 
 
+
+/* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNMEMMAP_CPP
+ * System-only portions of the two BSC board maps.  ROM and the Memory Pack
+ * are installed explicitly below because BSC-HiROM has shadow regions whose
+ * 64 KiB stride cannot be represented by the legacy linear SnesMemMapT. */
+static SnesMemMapT _SnesMemMap_BSCLoRom_Sys[]=
+{
+    {0x70, 0x7D, 0x0000, 0x7FFF, SNCPU_CYCLE_SLOW, SNESMEM_TYPE_SRAM},
+    {0xF0, 0xFF, 0x0000, 0x7FFF, SNCPU_CYCLE_SLOW, SNESMEM_TYPE_SRAM},
+    {0x7E, 0x7F, 0x0000, 0xFFFF, SNCPU_CYCLE_SLOW, SNESMEM_TYPE_RAM},
+    {0x00, 0x3F, 0x0000, 0x1FFF, SNCPU_CYCLE_SLOW, SNESMEM_TYPE_LORAM},
+    {0x00, 0x3F, 0x2000, 0x3FFF, SNCPU_CYCLE_FAST, SNESMEM_TYPE_PPU0},
+    {0x00, 0x3F, 0x4000, 0x5FFF, SNCPU_CYCLE_FAST, SNESMEM_TYPE_PPU1},
+    {0x80, 0xBF, 0x0000, 0x1FFF, SNCPU_CYCLE_SLOW, SNESMEM_TYPE_LORAM},
+    {0x80, 0xBF, 0x2000, 0x3FFF, SNCPU_CYCLE_FAST, SNESMEM_TYPE_PPU0},
+    {0x80, 0xBF, 0x4000, 0x5FFF, SNCPU_CYCLE_FAST, SNESMEM_TYPE_PPU1},
+    {0, 0, 0, 0, SNCPU_CYCLE_SLOW, SNESMEM_TYPE_NONE}
+};
+
+static SnesMemMapT _SnesMemMap_BSCHiRom_Sys[]=
+{
+    {0x20, 0x3F, 0x6000, 0x7FFF, SNCPU_CYCLE_SLOW, SNESMEM_TYPE_SRAM},
+    {0xA0, 0xBF, 0x6000, 0x7FFF, SNCPU_CYCLE_SLOW, SNESMEM_TYPE_SRAM},
+    {0x7E, 0x7F, 0x0000, 0xFFFF, SNCPU_CYCLE_SLOW, SNESMEM_TYPE_RAM},
+    {0x00, 0x3F, 0x0000, 0x1FFF, SNCPU_CYCLE_SLOW, SNESMEM_TYPE_LORAM},
+    {0x00, 0x3F, 0x2000, 0x3FFF, SNCPU_CYCLE_FAST, SNESMEM_TYPE_PPU0},
+    {0x00, 0x3F, 0x4000, 0x5FFF, SNCPU_CYCLE_FAST, SNESMEM_TYPE_PPU1},
+    {0x80, 0xBF, 0x0000, 0x1FFF, SNCPU_CYCLE_SLOW, SNESMEM_TYPE_LORAM},
+    {0x80, 0xBF, 0x2000, 0x3FFF, SNCPU_CYCLE_FAST, SNESMEM_TYPE_PPU0},
+    {0x80, 0xBF, 0x4000, 0x5FFF, SNCPU_CYCLE_FAST, SNESMEM_TYPE_PPU1},
+    {0, 0, 0, 0, SNCPU_CYCLE_SLOW, SNESMEM_TYPE_NONE}
+};
+
 #if SNES_DSP1
 static SnesMemMapT	_SnesMemMap_HiRom_DSP1[]=
 {
@@ -556,6 +589,184 @@ void SnesSystem::MapMem(SnesMemMapT *pMemMap)
 }
 
 
+
+/* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNMEMMAP_CPP */
+static void _SnesMapBSCROMPage(SNCpuT *pCpu, Uint8 *pRom, Uint32 nRomBytes,
+                               Uint32 uBus, Uint32 uLogicalOffset)
+{
+    Uint32 uOffset;
+    if (!pCpu || !pRom || !nRomBytes)
+        return;
+    uOffset = _SnesMirrorRomOffset(nRomBytes, uLogicalOffset);
+    SNCPUSetMemSpeed(pCpu, uBus, SNCPU_BANK_SIZE, SNCPU_CYCLE_SLOW);
+    SNCPUSetBank(pCpu, uBus, SNCPU_BANK_SIZE, pRom + uOffset, FALSE);
+}
+
+void SnesSystem::MapBSCLoRom(void)
+{
+    SNCpuT *pCpu = &m_Cpu;
+    Uint8 *pRom = m_pRom ? m_pRom->GetData() : NULL;
+    Uint32 nRomBytes = m_pRom ? m_pRom->GetBytes() : 0;
+    struct RegionT { Uint8 b0, b1; Uint32 base; };
+    static const RegionT Regions[] =
+    {
+        {0x00, 0x1F, 0x000000u},
+        {0x20, 0x3F, 0x100000u},
+        {0x80, 0x9F, 0x200000u},
+        {0xA0, 0xBF, 0x100000u},
+    };
+    Uint32 r, bank, a;
+
+    MapMem(_SnesMemMap_BSCLoRom_Sys);
+
+    for (r = 0; r < sizeof(Regions) / sizeof(Regions[0]); ++r)
+    {
+        for (bank = Regions[r].b0; bank <= Regions[r].b1; ++bank)
+        {
+            for (a = 0x8000; a < 0x10000; a += SNCPU_BANK_SIZE)
+            {
+                Uint32 logical = Regions[r].base +
+                    (bank - Regions[r].b0) * 0x8000u + (a - 0x8000u);
+                _SnesMapBSCROMPage(pCpu, pRom, nRomBytes,
+                                   (bank << 16) | a, logical);
+            }
+        }
+    }
+
+    /* BSC-LoROM slot: C0-EF:0000-FFFF. */
+    for (bank = 0xC0; bank <= 0xEF; ++bank)
+    {
+        for (a = 0; a < 0x10000; a += SNCPU_BANK_SIZE)
+        {
+            Uint32 bus = (bank << 16) | a;
+            SNCPUSetMemSpeed(pCpu, bus, SNCPU_BANK_SIZE, SNCPU_CYCLE_SLOW);
+            SNCPUSetTrap(pCpu, bus, SNCPU_BANK_SIZE, ReadBSXSlot, WriteBSXSlot);
+        }
+    }
+}
+
+void SnesSystem::MapBSCHiRom(void)
+{
+    SNCpuT *pCpu = &m_Cpu;
+    Uint8 *pRom = m_pRom ? m_pRom->GetData() : NULL;
+    Uint32 nRomBytes = m_pRom ? m_pRom->GetBytes() : 0;
+    Uint32 bank, a;
+
+    MapMem(_SnesMemMap_BSCHiRom_Sys);
+
+    /* ROM shadow 00-1F:8000-FFFF. */
+    for (bank = 0x00; bank <= 0x1F; ++bank)
+        for (a = 0x8000; a < 0x10000; a += SNCPU_BANK_SIZE)
+            _SnesMapBSCROMPage(pCpu, pRom, nRomBytes, (bank << 16) | a,
+                               bank * 0x10000u + a);
+
+    /* ROM linear 40-5F:0000-FFFF. */
+    for (bank = 0x40; bank <= 0x5F; ++bank)
+        for (a = 0; a < 0x10000; a += SNCPU_BANK_SIZE)
+            _SnesMapBSCROMPage(pCpu, pRom, nRomBytes, (bank << 16) | a,
+                               (bank - 0x40u) * 0x10000u + a);
+
+    /* ROM shadow 80-9F and linear C0-DF. */
+    for (bank = 0x80; bank <= 0x9F; ++bank)
+        for (a = 0x8000; a < 0x10000; a += SNCPU_BANK_SIZE)
+            _SnesMapBSCROMPage(pCpu, pRom, nRomBytes, (bank << 16) | a,
+                               (bank - 0x80u) * 0x10000u + a);
+    for (bank = 0xC0; bank <= 0xDF; ++bank)
+        for (a = 0; a < 0x10000; a += SNCPU_BANK_SIZE)
+            _SnesMapBSCROMPage(pCpu, pRom, nRomBytes, (bank << 16) | a,
+                               (bank - 0xC0u) * 0x10000u + a);
+
+    /* BSC-HiROM Memory Pack windows. */
+    for (bank = 0x20; bank <= 0x3F; ++bank)
+        for (a = 0x8000; a < 0x10000; a += SNCPU_BANK_SIZE)
+        {
+            Uint32 bus = (bank << 16) | a;
+            SNCPUSetMemSpeed(pCpu, bus, SNCPU_BANK_SIZE, SNCPU_CYCLE_SLOW);
+            SNCPUSetTrap(pCpu, bus, SNCPU_BANK_SIZE, ReadBSXSlot, WriteBSXSlot);
+        }
+    for (bank = 0x60; bank <= 0x7D; ++bank)
+        for (a = 0; a < 0x10000; a += SNCPU_BANK_SIZE)
+        {
+            Uint32 bus = (bank << 16) | a;
+            SNCPUSetMemSpeed(pCpu, bus, SNCPU_BANK_SIZE, SNCPU_CYCLE_SLOW);
+            SNCPUSetTrap(pCpu, bus, SNCPU_BANK_SIZE, ReadBSXSlot, WriteBSXSlot);
+        }
+    for (bank = 0xA0; bank <= 0xBF; ++bank)
+        for (a = 0x8000; a < 0x10000; a += SNCPU_BANK_SIZE)
+        {
+            Uint32 bus = (bank << 16) | a;
+            SNCPUSetMemSpeed(pCpu, bus, SNCPU_BANK_SIZE, SNCPU_CYCLE_SLOW);
+            SNCPUSetTrap(pCpu, bus, SNCPU_BANK_SIZE, ReadBSXSlot, WriteBSXSlot);
+        }
+    for (bank = 0xE0; bank <= 0xFF; ++bank)
+        for (a = 0; a < 0x10000; a += SNCPU_BANK_SIZE)
+        {
+            Uint32 bus = (bank << 16) | a;
+            SNCPUSetMemSpeed(pCpu, bus, SNCPU_BANK_SIZE, SNCPU_CYCLE_SLOW);
+            SNCPUSetTrap(pCpu, bus, SNCPU_BANK_SIZE, ReadBSXSlot, WriteBSXSlot);
+        }
+}
+
+Bool SnesSystem::ResolveBSXSlotAddress(Uint32 uAddr, Uint32 *pOffset) const
+{
+    Uint8 bank;
+    Uint16 addr;
+    Uint32 off;
+    if (!pOffset || !m_pRom || !m_BSXMemory.IsAttached())
+        return FALSE;
+
+    bank = (Uint8)(uAddr >> 16);
+    addr = (Uint16)uAddr;
+
+    if (m_pRom->m_eMapping == SNROM_MAPPING_BSCLOROM)
+    {
+        if (bank < 0xC0 || bank > 0xEF)
+            return FALSE;
+        off = ((Uint32)(bank - 0xC0) << 16) | addr;
+        *pOffset = off & (SNES_BSX_MEMORY_PACK_BYTES - 1);
+        return TRUE;
+    }
+
+    if (m_pRom->m_eMapping == SNROM_MAPPING_BSCHIROM)
+    {
+        if (bank >= 0x20 && bank <= 0x3F && addr >= 0x8000)
+            off = ((Uint32)(bank - 0x20) << 16) | addr;
+        else if (bank >= 0x60 && bank <= 0x7D)
+            off = ((Uint32)(bank - 0x60) << 16) | addr;
+        else if (bank >= 0xA0 && bank <= 0xBF && addr >= 0x8000)
+            off = ((Uint32)(bank - 0xA0) << 16) | addr;
+        else if (bank >= 0xE0)
+            off = ((Uint32)(bank - 0xE0) << 16) | addr;
+        else
+            return FALSE;
+
+        *pOffset = off & (SNES_BSX_MEMORY_PACK_BYTES - 1);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+Uint8 SNCPU_TRAPFUNC SnesSystem::ReadBSXSlot(SNCpuT *pCpu, Uint32 uAddr)
+{
+    SnesSystem *pSnes = (SnesSystem *)pCpu->pUserData;
+    Uint32 off;
+    Uint8 v = pCpu->uMDR;
+    if (pSnes && pSnes->ResolveBSXSlotAddress(uAddr, &off))
+        v = pSnes->m_BSXMemory.Read(off);
+    pCpu->uMDR = v;
+    return v;
+}
+
+void SNCPU_TRAPFUNC SnesSystem::WriteBSXSlot(SNCpuT *pCpu, Uint32 uAddr, Uint8 uData)
+{
+    SnesSystem *pSnes = (SnesSystem *)pCpu->pUserData;
+    Uint32 off;
+    pCpu->uMDR = uData;
+    if (pSnes && pSnes->ResolveBSXSlotAddress(uAddr, &off))
+        pSnes->m_BSXMemory.Write(off, uData);
+}
+
 /* AURORA_SA1_V1_REFERENCE_LOGIC_20260902 */
 Uint8 SNCPU_TRAPFUNC SnesSystem::ReadSA1BWRAM(SNCpuT *pCpu, Uint32 uAddr)
 {
@@ -582,8 +793,10 @@ Uint8 SNCPU_TRAPFUNC SnesSystem::ReadSA1ROM(SNCpuT *pCpu, Uint32 uAddr)
 
 void SNCPU_TRAPFUNC SnesSystem::WriteSA1ROM(SNCpuT *pCpu, Uint32 uAddr, Uint8 uData)
 {
-    (void)uAddr;
-    pCpu->uMDR = uData; /* mask ROM ignores writes, bus still sees the byte */
+    SnesSystem *pSnes = (SnesSystem *)pCpu->pUserData;
+    pCpu->uMDR = uData;
+    if (pSnes)
+        pSnes->m_SA1.WriteMainROM(uAddr, uData); /* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNMEMMAP_CPP */
 }
 
 /* AURORA_SWC_FLOPPY_V1_20260831 */
@@ -1161,6 +1374,15 @@ void SnesSystem::MapMem(SNRomMappingE eRomMapping, Uint32 uFlags)
 			}
 #endif
 			if (uFlags & SNROM_FLAG_OBC1) { MapMem(_SnesMemMap_OBC1); }
+			break;
+
+		/* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNMEMMAP_CPP */
+		case SNROM_MAPPING_BSCLOROM:
+			MapBSCLoRom();
+			break;
+
+		case SNROM_MAPPING_BSCHIROM:
+			MapBSCHiRom();
 			break;
 
 		// LoROM > 4MB (Jumbo / ExLoROM, ate 8MB)

@@ -242,6 +242,53 @@ Uint32 SNSA1::MirrorRomOffset(Uint32 uPos) const
     }
 }
 
+
+/* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNSA1_CPP
+ * Super MMC addresses segments 0-7 in 1 MiB units.  On a slotted SA-1 cart,
+ * 0x400000+ is the Memory Pack device; a 1 MiB pack mirrors through segments
+ * 4-7.  Low 32 KiB windows select CB/DB/EB/FB only when bit 7 enables bank
+ * mode, while C0-FF always use the selected segment. */
+Bool SNSA1::BSXMemoryOffset(Uint8 uBank, Uint16 uAddr, Uint32 *pOffset) const
+{
+    Uint32 uSegment, uWithin, uGroup, uIndex;
+    Uint8 uReg;
+
+    if (!pOffset || !m_pOwner || !m_pOwner->HasBSXMemoryPack())
+        return FALSE;
+
+    if (uBank >= 0xC0)
+    {
+        uGroup = (uBank - 0xC0) >> 4;
+        uSegment = m_Reg[0x20 + uGroup] & 7;
+        uWithin = ((Uint32)(uBank & 0x0F) << 16) | uAddr;
+    }
+    else if (uAddr >= 0x8000 &&
+             (uBank <= 0x3F || (uBank >= 0x80 && uBank <= 0xBF)))
+    {
+        if (uBank <= 0x1F) { uGroup = 0; uIndex = uBank; }
+        else if (uBank <= 0x3F) { uGroup = 1; uIndex = uBank - 0x20; }
+        else if (uBank <= 0x9F) { uGroup = 2; uIndex = uBank - 0x80; }
+        else { uGroup = 3; uIndex = uBank - 0xA0; }
+
+        uReg = m_Reg[0x20 + uGroup];
+        if (!(uReg & 0x80))
+            return FALSE;
+        uSegment = uReg & 7;
+        uWithin = uIndex * 0x8000u + (uAddr & 0x7FFFu);
+    }
+    else
+    {
+        return FALSE;
+    }
+
+    if (uSegment < 4u)
+        return FALSE;
+
+    *pOffset = (((uSegment - 4u) << 20) + uWithin) &
+               (SNES_BSX_MEMORY_PACK_BYTES - 1);
+    return TRUE;
+}
+
 Uint32 SNSA1::RomOffset(Uint8 uBank, Uint16 uAddr) const
 {
     Uint32 uSegment;
@@ -279,6 +326,17 @@ void SNSA1::MapRomPage(SNCpuT *pCpu, Uint32 uBus, Bool bMainCpu)
 {
     Uint8 uBank = (Uint8)(uBus >> 16);
     Uint16 uAddr = (Uint16)uBus;
+    Uint32 uPackOffset;
+    if (BSXMemoryOffset(uBank, uAddr, &uPackOffset))
+    {
+        if (bMainCpu)
+            SNCPUSetTrap(pCpu, uBus, 0x2000,
+                         SnesSystem::ReadSA1ROM, SnesSystem::WriteSA1ROM);
+        else
+            SNCPUSetTrap(pCpu, uBus, 0x2000, ReadCPU, WriteCPU);
+        SNCPUSetMemSpeed(pCpu, uBus, 0x2000, SNCPU_CYCLE_FAST);
+        return;
+    }
     Uint32 uOff = RomOffset(uBank, uAddr);
     Uint32 uEnd = RomOffset(uBank, (Uint16)(uAddr + 0x1FFF));
 
@@ -718,9 +776,22 @@ void SNSA1::WriteMainBWRAM(Uint32 uAddr, Uint8 uData)
 
 Uint8 SNSA1::ReadMainROM(Uint32 uAddr, Uint8 uOpenBus) const
 {
-    if (!m_bActive || !m_pRom || !m_nRomBytes)
+    Uint32 uPackOffset;
+    if (!m_bActive)
+        return uOpenBus;
+    if (BSXMemoryOffset((Uint8)(uAddr >> 16), (Uint16)uAddr, &uPackOffset))
+        return m_pOwner->ReadBSXMemoryPack(uPackOffset);
+    if (!m_pRom || !m_nRomBytes)
         return uOpenBus;
     return m_pRom[RomOffset((Uint8)(uAddr >> 16), (Uint16)uAddr)];
+}
+
+void SNSA1::WriteMainROM(Uint32 uAddr, Uint8 uData)
+{
+    Uint32 uPackOffset;
+    if (m_bActive && m_pOwner &&
+        BSXMemoryOffset((Uint8)(uAddr >> 16), (Uint16)uAddr, &uPackOffset))
+        m_pOwner->WriteBSXMemoryPack(uPackOffset, uData);
 }
 
 Uint8 SNCPU_TRAPFUNC SNSA1::ReadCPU(SNCpuT *pCpu, Uint32 uAddr)
@@ -769,8 +840,14 @@ Uint8 SNSA1::ReadBus(Uint32 uAddr, Uint8 uOpenBus)
             }
             return ReadBWRAMLinear(off, uOpenBus);
         }
-        if (addr >= 0x8000 && m_pRom)
-            return m_pRom[RomOffset(bank, addr)];
+        if (addr >= 0x8000)
+        {
+            Uint32 uPackOffset;
+            if (BSXMemoryOffset(bank, addr, &uPackOffset))
+                return m_pOwner->ReadBSXMemoryPack(uPackOffset);
+            if (m_pRom)
+                return m_pRom[RomOffset(bank, addr)];
+        }
         return uOpenBus;
     }
 
@@ -784,8 +861,14 @@ Uint8 SNSA1::ReadBus(Uint32 uAddr, Uint8 uOpenBus)
         off = SA1BWRAMOffset(uAddr, &ok, &bitmap);
         return ok ? ReadBitmap(off, uOpenBus) : uOpenBus;
     }
-    if (bank >= 0xC0 && m_pRom)
-        return m_pRom[RomOffset(bank, addr)];
+    if (bank >= 0xC0)
+    {
+        Uint32 uPackOffset;
+        if (BSXMemoryOffset(bank, addr, &uPackOffset))
+            return m_pOwner->ReadBSXMemoryPack(uPackOffset);
+        if (m_pRom)
+            return m_pRom[RomOffset(bank, addr)];
+    }
     return uOpenBus;
 }
 
@@ -828,6 +911,12 @@ void SNSA1::WriteBus(Uint32 uAddr, Uint8 uData)
             else WriteBWRAMLinear(off, uData);
             return;
         }
+        if (addr >= 0x8000)
+        {
+            Uint32 uPackOffset;
+            if (BSXMemoryOffset(bank, addr, &uPackOffset) && m_pOwner)
+                m_pOwner->WriteBSXMemoryPack(uPackOffset, uData);
+        }
         return;
     }
 
@@ -841,6 +930,13 @@ void SNSA1::WriteBus(Uint32 uAddr, Uint8 uData)
     {
         off = SA1BWRAMOffset(uAddr, &ok, &bitmap);
         if (ok) WriteBitmap(off, uData);
+        return;
+    }
+    if (bank >= 0xC0)
+    {
+        Uint32 uPackOffset;
+        if (BSXMemoryOffset(bank, addr, &uPackOffset) && m_pOwner)
+            m_pOwner->WriteBSXMemoryPack(uPackOffset, uData);
     }
 }
 

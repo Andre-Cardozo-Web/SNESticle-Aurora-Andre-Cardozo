@@ -96,6 +96,7 @@ public:
     Uint8 ReadMainBWRAM(Uint32 uAddr, Uint8 uOpenBus);
     void  WriteMainBWRAM(Uint32 uAddr, Uint8 uData);
     Uint8 ReadMainROM(Uint32 uAddr, Uint8 uOpenBus) const;
+    void  WriteMainROM(Uint32 uAddr, Uint8 uData); /* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_SNSA1_H */
 
     void MapMainCPU(SNCpuT *pMainCpu);
 
@@ -152,6 +153,7 @@ private:
 
     Uint32 MirrorRomOffset(Uint32 uPos) const;
     Uint32 RomOffset(Uint8 uBank, Uint16 uAddr) const;
+    Bool BSXMemoryOffset(Uint8 uBank, Uint16 uAddr, Uint32 *pOffset) const;
     void MapRomWindows(SNCpuT *pCpu, Bool bMainCpu);
     void MapRomGroup(SNCpuT *pCpu, Uint32 uGroup, Bool bMainCpu);
     void MapRomPage(SNCpuT *pCpu, Uint32 uBus, Bool bMainCpu);
