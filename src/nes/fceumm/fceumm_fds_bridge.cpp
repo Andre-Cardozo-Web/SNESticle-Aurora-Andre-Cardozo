@@ -1,3 +1,20 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include "fceumm_fds_bridge.h"
+#include "types.h"
+#include "rendersurface.h"
+extern "C" {
+#include "gs.h"
+#include "gpprim.h"
+}
+static bool s_GameLoaded = true;
+static bool s_DirectReady = true;
+static bool s_DirectClutResident = false;
+static Uint32 s_DirectFrameSerial = 1;
+static Uint32 s_DirectUploadSerial = 0;
+static Uint8 s_VideoBuffer[256 * 240];
+static Uint32 s_GsPalette[256];
 bool FceummFdsBridge_DrawDirectGs(Uint32 auroraOutBaseTBP, Int32 logicalY, Float32 intensity) {
     if (!auroraOutBaseTBP || !s_GameLoaded || !s_DirectReady) return false;
     Uint32 texTBP = auroraOutBaseTBP + 0x400;
@@ -8,7 +25,6 @@ bool FceummFdsBridge_DrawDirectGs(Uint32 auroraOutBaseTBP, Int32 logicalY, Float
         s_DirectUploadSerial = s_DirectFrameSerial;
     }
     if (!s_DirectClutResident) {
-        
         GPPrimUploadTexture((int)clutTBP, 64, 0, 0, GS_PSMCT32, s_GsPalette, 16, 16);
         s_DirectClutResident = true;
     }
