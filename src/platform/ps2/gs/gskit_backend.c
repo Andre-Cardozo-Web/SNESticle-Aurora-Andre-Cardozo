@@ -224,6 +224,7 @@ static void _GskApplyDisplay(void)
 {
     GSGLOBAL *gs = _pGsGlobal;
     int dw, dh, magh, startx, starty;
+    int new_dw1 = 0; // REINCLUÍDA: Correção vital para evitar o erro de compilação (Exit Code 2)
 
     if (!_gsk_initialised || !gs) {
         return;
@@ -247,6 +248,21 @@ static void _GskApplyDisplay(void)
         starty = starty + sy;
     }
 
+    if (g_GskWidescreen)
+    {
+        int magh1  = magh + 1;
+        int srcpix = magh1 ? dw / magh1 : dw;
+        int new_magh1 = (magh1 * 4 + 1) / 3;
+
+        if (new_magh1 > 16) new_magh1 = 16;
+        if (new_magh1 < 1)  new_magh1 = 1;
+        new_dw1 = new_magh1 * srcpix;
+
+        startx -= (new_dw1 - dw) / 2;
+        dw   = new_dw1;
+        magh = new_magh1 - 1;
+    }
+
     /* Trava os parâmetros de enquadramento anamórfico e impede que chamadores
        antigos rebaixem a resolução horizontal do emulador */
     gs->DW     = dw;
@@ -257,7 +273,7 @@ static void _GskApplyDisplay(void)
     gs->StartY = starty;
 
     /* Re-emite o offset de tela sincronizado com o novo espaço 1280x512 */
-    gsKit_set_display_offset(gs, g_GskDispOffX, g_GskDispOffY + _gsk_game_y_bias);
+    gsKit_set_display_offset(gs, g_GskDispOffX * _gsk_vck, g_GskDispOffY + _gsk_game_y_bias);
     _GskApplyRenderTransform();
 }
 
