@@ -376,13 +376,13 @@ void QuicknesBridge_RunFrame(Emu::SysInputT *pInput, CRenderSurface *pTarget, CM
     if (!s_GameLoaded || !s_pEmu) return;
     s_TurboPhase = (((s_TurboFrame >> s_TurboSpeedShift) & 1U) == 0U);
     ++s_TurboFrame;
-    if (pInput && pInput->uPad && ((*pInput->uPad) & SNESIO_JOY_L)) {
+    if (pInput && ((*pInput->uPad) & SNESIO_JOY_L)) {
         quicknes_snesticle_set_microphone(1);
     } else {
         quicknes_snesticle_set_microphone(0);
     }
-    Uint8 p1 = (pInput && pInput->uPad) ? qMapPad(*pInput->uPad) : 0;
-    Uint8 p2 = (pInput && pInput->uPad) ? qMapPad(*pInput->uPad) : 0;
+    Uint8 p1 = pInput ? qMapPad(*pInput->uPad) : 0;
+    Uint8 p2 = pInput ? qMapPad(*pInput->uPad) : 0;
     if (s_LightGunMode != 0) {
         qUpdateLightGunAim(pInput);
         if (s_LightGunMode == 1) {
@@ -399,6 +399,18 @@ void QuicknesBridge_RunFrame(Emu::SysInputT *pInput, CRenderSurface *pTarget, CM
         qDrainAudio(pMixBuf);
         return;
     }
+    const Nes_Emu::frame_t &frame = s_pEmu->frame();
+    s_DirectReady = frame.pixels && frame.pitch == QN_VIDEO_W && (((uintptr_t)frame.pixels & 15u) == 0u);
+    if (s_DirectReady) {
+        if (++s_DirectFrameSerial == 0) {
+            s_DirectFrameSerial = 1;
+            s_DirectUploadSerial = 0;
+        }
+    } else {
+        qRenderFrame(pTarget);
+    }
+    qDrainAudio(pMixBuf);
+}
     const Nes_Emu::frame_t &frame = s_pEmu->frame();
     s_DirectReady = frame.pixels && frame.pitch == QN_VIDEO_W && (((uintptr_t)frame.pixels & 15u) == 0u);
     if (s_DirectReady) {
