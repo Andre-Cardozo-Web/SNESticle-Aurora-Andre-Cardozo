@@ -80,7 +80,7 @@ enum {
 };
 
 static Uint8 s_Video[QN_VIDEO_W * QN_VIDEO_H + 16] __attribute__((aligned(64)));
-static Uint32 s_RgbaPalette[256];
+static Uint32 s_RgbaPalette;
 static short  s_LastFramePalette[Nes_Emu::max_palette_size];
 static bool   s_PaletteValid = false;
 
@@ -104,7 +104,7 @@ static void qGetRgb(unsigned ci, Uint8 *r, Uint8 *g, Uint8 *b) {
         *b = rgb.blue;
     }
 }
-static Uint32 s_GsPalette[256] __attribute__((aligned(64)));
+static Uint32 s_GsPalette __attribute__((aligned(64)));
 static short s_DirectLastPalette[Nes_Emu::max_palette_size];
 static bool s_DirectPaletteValid = false;
 static bool s_DirectClutResident = false;
@@ -117,7 +117,7 @@ static Int16 s_Pending[QN_AUDIO_MAX + 4];
 static int   s_PendingCount = 0;
 
 static Uint32 qCrc32(const Uint8 *pData, size_t nBytes) {
-    static const Uint32 table[16] = {
+    static const Uint32 table = {
         0x00000000U, 0x1DB71064U, 0x3B6E20C8U, 0x26D930ACU,
         0x76DC4190U, 0x6B6B51F4U, 0x4DB26158U, 0x5005713CU,
         0xEDB88320U, 0xF00F9344U, 0xD6D6A3E8U, 0xCB61B38CU,
@@ -134,28 +134,20 @@ static Uint32 qCrc32(const Uint8 *pData, size_t nBytes) {
 
 static Uint32 qNesPayloadCrc32(const void *pData, size_t nBytes) {
     const Uint8 *rom = (const Uint8 *)pData;
-    if (!rom || nBytes < 16 || rom[0] != 'N' || rom[1] != 'E' || rom[2] != 'S' || rom[3] != 0x1A) {
+    if (!rom || nBytes < 16 || rom != 'N' || rom != 'E' || rom != 'S' || rom != 0x1A) {
         return 0;
     }
-    size_t offset = 16U + ((rom[6] & 0x04U) ? 512U : 0U);
-    size_t payload = (size_t)rom[4] * 16384U + (size_t)rom[5] * 8192U;
+    size_t offset = 16U + ((rom & 0x04U) ? 512U : 0U);
+    size_t payload = (size_t)rom * 16384U + (size_t)rom * 8192U;
     if (payload == 0 || offset > nBytes || payload > nBytes - offset) {
         return 0;
     }
     return qCrc32(rom + offset, payload);
 }
 
-static bool qFamicomLightGunCrc(Uint32 crc) {
-    return (crc == 0x0AFB395EU || crc == 0x24598791U || crc == 0x2A6559A1U);
-}
-
-static bool qTwoNesZapperCrc(Uint32 crc) {
-    return (crc == 0x231BC76EU || crc == 0xB79F2651U || crc == 0xD15009CCU);
-}
-
-static bool qNesZapperCrc(Uint32 crc) {
-    return (crc == 0x01B87025U || crc == 0x04A6B46DU || crc == 0x051E60C6U);
-}
+static bool qFamicomLightGunCrc(Uint32 crc) { return (crc == 0x0AFB395EU || crc == 0x24598791U || crc == 0x2A6559A1U); }
+static bool qTwoNesZapperCrc(Uint32 crc) { return (crc == 0x231BC76EU || crc == 0xB79F2651U || crc == 0xD15009CCU); }
+static bool qNesZapperCrc(Uint32 crc) { return (crc == 0x01B87025U || crc == 0x04A6B46DU || crc == 0x051E60C6U); }
 
 static int qLightGunModeForCrc(Uint32 crc) {
     if (qFamicomLightGunCrc(crc)) return 2;
@@ -164,30 +156,10 @@ static int qLightGunModeForCrc(Uint32 crc) {
     return 0;
 }
 
-static void qResetLightGunAim(void) {
-    s_GunX = 128 << 8;
-    s_GunY = 120 << 8;
-    s_GunVX = s_GunVY = 0;
-}
-
-static Int32 qGunTargetVelocity(unsigned axis) {
-    Int32 d = (Int32)axis - 128;
-    if (d < 0 ? -d : d <= 20) return 0;
-    Int32 speed = 160 + ((d < 0 ? -d : d - 20) * 1056 + 53) / 107;
-    return (d < 0 ? -1 : 1) * (speed > 1216 ? 1216 : speed);
-}
-
-static Int32 qGunApproach(Int32 v, Int32 t, Int32 s) {
-    if (v < t) return (v + s > t) ? t : v + s;
-    if (v > t) return (v - s < t) ? t : v - s;
-    return v;
-}
-
-static Int32 qGunVelocityStep(Int32 c, Int32 t) {
-    if (!t) return 320;
-    if ((c < 0 && t > 0) || (c > 0 && t < 0)) return 256;
-    return 80;
-}
+static void qResetLightGunAim(void) { s_GunX = 128 << 8; s_GunY = 120 << 8; s_GunVX = s_GunVY = 0; }
+static Int32 qGunTargetVelocity(unsigned axis) { Int32 d = (Int32)axis - 128; if (d < 0 ? -d : d <= 20) return 0; Int32 speed = 160 + ((d < 0 ? -d : d - 20) * 1056 + 53) / 107; return (d < 0 ? -1 : 1) * (speed > 1216 ? 1216 : speed); }
+static Int32 qGunApproach(Int32 v, Int32 t, Int32 s) { if (v < t) return (v + s > t) ? t : v + s; if (v > t) return (v - s < t) ? t : v - s; return v; }
+static Int32 qGunVelocityStep(Int32 c, Int32 t) { if (!t) return 320; if ((c < 0 && t > 0) || (c > 0 && t < 0)) return 256; return 80; }
 
 static void qUpdateLightGunAim(Emu::SysInputT *pInput) {
     unsigned ax = 0x80U, ay = 0x80U;
@@ -199,7 +171,7 @@ static void qUpdateLightGunAim(Emu::SysInputT *pInput) {
         offscreen = (InputGetPadData(0) & (PAD_L2 | PAD_SQUARE)) == (PAD_L2 | PAD_SQUARE);
     }
     if (pInput && pInput->uPad != EMUSYS_DEVICE_DISCONNECTED) {
-        trigger = (pInput->uPad & SNESIO_JOY_B) != 0;
+        trigger = ((*pInput->uPad) & SNESIO_JOY_B) != 0;
     }
     if (offscreen) {
         trigger = true;
@@ -215,124 +187,34 @@ static void qUpdateLightGunAim(Emu::SysInputT *pInput) {
     quicknes_snesticle_ext_set_lightgun_state((int)(s_GunX >> 8), (int)(s_GunY >> 8), trigger ? 1 : 0, offscreen ? 1 : 0);
 }
 
-static void qUpdateArkanoidVaus(Emu::SysInputT *pInput) {
-    unsigned axis = 0x80U;
-    if (!s_ArkanoidVaus) return;
-    if (InputIsPadConnected(0)) {
-        axis = (InputGetPadAnalog(0) >> 16) & 0xFFU;
-    }
-    int fire = (pInput && pInput->uPad != EMUSYS_DEVICE_DISCONNECTED && (pInput->uPad & SNESIO_JOY_B)) ? 1 : 0;
-    quicknes_snesticle_ext_set_arkanoid_state(0x54U + (axis * 160U + 127U) / 255U, fire);
-}
-
-static void qResetDirectVideo(void) {
-    memset(s_DirectLastPalette, 0, sizeof(s_DirectLastPalette));
-    s_DirectPaletteValid = s_DirectClutResident = s_DirectReady = false;
-    s_DirectFrameSerial = s_DirectUploadSerial = 0;
-}
-
-static void qResetTransient(void) {
-    memset(s_Video, 0, sizeof(s_Video));
-    memset(s_LastFramePalette, 0, sizeof(s_LastFramePalette));
-    memset(s_Pending, 0, sizeof(s_Pending));
-    s_PendingCount = 0;
-    s_PaletteValid = false;
-    qResetDirectVideo();
-    s_TurboPhase = false;
-    s_TurboFrame = s_TurboSpeedShift = 0;
-    s_SkipVideoNext = false;
-    s_LastSpriteScanlineLimit = s_LastSpriteScreenLimit = -1;
-}
-
-static Uint8 qMapPad(Uint16 pad) {
-    if (pad == EMUSYS_DEVICE_DISCONNECTED) return 0;
-    Uint8 nes = 0;
-    if (pad & SNESIO_JOY_B) nes |= 0x01;
-    if (pad & SNESIO_JOY_Y) nes |= 0x02;
-    if ((pad & SNESIO_JOY_A) && s_TurboPhase) nes |= 0x01;
-    if ((pad & SNESIO_JOY_X) && s_TurboPhase) nes |= 0x02;
-    if (pad & SNESIO_JOY_SELECT) nes |= 0x04;
-    if (pad & SNESIO_JOY_START) nes |= 0x08;
-    if (pad & SNESIO_JOY_UP) nes |= 0x10;
-    if (pad & SNESIO_JOY_DOWN) nes |= 0x20;
-    if (pad & SNESIO_JOY_LEFT) nes |= 0x40;
-    if (pad & SNESIO_JOY_RIGHT) nes |= 0x80;
-    return nes;
-}
+static void qUpdateArkanoidVaus(Emu::SysInputT *pInput) { unsigned axis = 0x80U; if (!s_ArkanoidVaus) return; if (InputIsPadConnected(0)) { axis = (InputGetPadAnalog(0) >> 16) & 0xFFU; } int fire = (pInput && pInput->uPad != EMUSYS_DEVICE_DISCONNECTED && ((*pInput->uPad) & SNESIO_JOY_B)) ? 1 : 0; quicknes_snesticle_ext_set_arkanoid_state(0x54U + (axis * 160U + 127U) / 255U, fire); }
+static void qResetDirectVideo(void) { memset(s_DirectLastPalette, 0, sizeof(s_DirectLastPalette)); s_DirectPaletteValid = s_DirectClutResident = s_DirectReady = false; s_DirectFrameSerial = s_DirectUploadSerial = 0; }
+static void qResetTransient(void) { memset(s_Video, 0, sizeof(s_Video)); memset(s_LastFramePalette, 0, sizeof(s_LastFramePalette)); memset(s_Pending, 0, sizeof(s_Pending)); s_PendingCount = 0; s_PaletteValid = false; qResetDirectVideo(); s_TurboPhase = false; s_TurboFrame = s_TurboSpeedShift = 0; s_SkipVideoNext = false; s_LastSpriteScanlineLimit = s_LastSpriteScreenLimit = -1; }
+static Uint8 qMapPad(Uint16 pad) { if (pad == EMUSYS_DEVICE_DISCONNECTED) return 0; Uint8 nes = 0; if (pad & SNESIO_JOY_B) nes |= 0x01; if (pad & SNESIO_JOY_Y) nes |= 0x02; if ((pad & SNESIO_JOY_A) && s_TurboPhase) nes |= 0x01; if ((pad & SNESIO_JOY_X) && s_TurboPhase) nes |= 0x02; if (pad & SNESIO_JOY_SELECT) nes |= 0x04; if (pad & SNESIO_JOY_START) nes |= 0x08; if (pad & SNESIO_JOY_UP) nes |= 0x10; if (pad & SNESIO_JOY_DOWN) nes |= 0x20; if (pad & SNESIO_JOY_LEFT) nes |= 0x40; if (pad & SNESIO_JOY_RIGHT) nes |= 0x80; return nes; }
 
 static void qRenderFrame(CRenderSurface *pTarget) {
-    if (!pTarget || !pTarget->GetFormat() || pTarget->GetFormat()->uBitDepth != 32) return;
-    const Nes_Emu::frame_t &frame = s_pEmu->frame();
-    if (!frame.pixels || frame.pitch <= 0) return;
-    if (!s_PaletteValid || memcmp(s_LastFramePalette, frame.palette, sizeof(s_LastFramePalette)) != 0) {
-        for (unsigned i = 0; i < 256; ++i) {
-            unsigned ci = (unsigned)(unsigned short)frame.palette[i];
-            Uint8 r, g, b;
-            qGetRgb(ci >= (unsigned)Nes_Emu::color_table_size ? 0 : ci, &r, &g, &b);
-            s_RgbaPalette[i] = 0xff000000u | ((Uint32)b << 16) | ((Uint32)g << 8) | r;
-        }
-        memcpy(s_LastFramePalette, frame.palette, sizeof(s_LastFramePalette));
-        s_PaletteValid = true;
-    }
-    for (int y = 0; y < Nes_Emu::image_height; ++y) {
-        Uint32 *dst = (Uint32 *)pTarget->GetLinePtr(y);
-        if (dst) {
-            const Uint8 *src = frame.pixels + (long)y * frame.pitch;
-            for (int x = 0; x < Nes_Emu::image_width; ++x) {
-                dst[x] = s_RgbaPalette[src[x]];
-            }
-        }
-    }
+    if (!pTarget || !pTarget->GetFormat() || pTarget->GetFormat()->uBitDepth != 32) return; const Nes_Emu::frame_t &frame = s_pEmu->frame(); if (!frame.pixels || frame.pitch <= 0) return;
+    if (!s_PaletteValid || memcmp(s_LastFramePalette, frame.palette, sizeof(s_LastFramePalette)) != 0) { for (unsigned i = 0; i < 256; ++i) { unsigned ci = (unsigned)(unsigned short)frame.palette[i]; Uint8 r, g, b; qGetRgb(ci >= (unsigned)Nes_Emu::color_table_size ? 0 : ci, &r, &g, &b); s_RgbaPalette[i] = 0xff000000u | ((Uint32)b << 16) | ((Uint32)g << 8) | r; } memcpy(s_LastFramePalette, frame.palette, sizeof(s_LastFramePalette)); s_PaletteValid = true; }
+    for (int y = 0; y < Nes_Emu::image_height; ++y) { Uint32 *dst = (Uint32 *)pTarget->GetLinePtr(y); if (dst) { const Uint8 *src = frame.pixels + (long)y * frame.pitch; for (int x = 0; x < Nes_Emu::image_width; ++x) dst[x] = s_RgbaPalette[src[x]]; } }
 }
 
 enum { QN_GS_TEX_TBP_OFFSET = 0x400, QN_GS_CLUT_TBP_OFFSET = 0x580, QN_GS_T8_TBW = 320 };
-void QuicknesBridge_InvalidateGsResources(void) {
-    s_DirectUploadSerial = 0;
-    s_DirectClutResident = false;
-}
-
-bool QuicknesBridge_CanDirectGsVideo(void) {
-    return s_GameLoaded && s_DirectReady && s_DirectFrameSerial != 0;
-}
+void QuicknesBridge_InvalidateGsResources(void) { s_DirectUploadSerial = 0; s_DirectClutResident = false; }
+bool QuicknesBridge_CanDirectGsVideo(void) { return s_GameLoaded && s_DirectReady && s_DirectFrameSerial != 0; }
 
 static void qRefreshGsPalette(const Nes_Emu::frame_t &frame) {
     if (s_DirectPaletteValid && memcmp(s_DirectLastPalette, frame.palette, sizeof(s_DirectLastPalette)) == 0) return;
-    for (unsigned i = 0; i < 256; ++i) {
-        unsigned ci = (unsigned)(unsigned short)frame.palette[i];
-        unsigned dest = i;
-        unsigned block = i & 0x3fU;
-        if ((block & 0x18U) == 0x08U) {
-            dest += 8U;
-        } else if ((block & 0x18U) == 0x10U) {
-            dest -= 8U;
-        }
-        Uint8 r, g, b;
-        qGetRgb(ci >= (unsigned)Nes_Emu::color_table_size ? 0 : ci, &r, &g, &b);
-        s_GsPalette[dest] = 0x80000000u | ((Uint32)b << 16) | ((Uint32)g << 8) | r;
-    }
-    memcpy(s_DirectLastPalette, frame.palette, sizeof(s_DirectLastPalette));
-    s_DirectPaletteValid = true;
-    s_DirectClutResident = false;
+    for (unsigned i = 0; i < 256; ++i) { unsigned ci = (unsigned)(unsigned short)frame.palette[i]; unsigned dest = i; unsigned block = i & 0x3fU; if ((block & 0x18U) == 0x08U) { dest += 8U; } else if ((block & 0x18U) == 0x10U) { dest -= 8U; } Uint8 r, g, b; qGetRgb(ci >= (unsigned)Nes_Emu::color_table_size ? 0 : ci, &r, &g, &b); s_GsPalette[dest] = 0x80000000u | ((Uint32)b << 16) | ((Uint32)g << 8) | r; }
+    memcpy(s_DirectLastPalette, frame.palette, sizeof(s_DirectLastPalette)); s_DirectPaletteValid = true; s_DirectClutResident = false;
 }
 
 bool QuicknesBridge_DrawDirectGs(Uint32 auroraOutBaseTBP, Int32 logicalY, Float32 intensity) {
-    const Nes_Emu::frame_t &frame = s_pEmu->frame();
-    if (!auroraOutBaseTBP || !QuicknesBridge_CanDirectGsVideo() || !frame.pixels || frame.pitch != QN_VIDEO_W) return false;
-    Uint32 texTBP = auroraOutBaseTBP + QN_GS_TEX_TBP_OFFSET;
-    Uint32 clutTBP = auroraOutBaseTBP + QN_GS_CLUT_TBP_OFFSET;
-    if (s_DirectUploadSerial != s_DirectFrameSerial) {
-        GPPrimUploadTexture((int)texTBP, QN_GS_T8_TBW, 0, 0, GS_PSMT8, (void *)frame.pixels, QN_VIDEO_W, Nes_Emu::image_height);
-        s_DirectUploadSerial = s_DirectFrameSerial;
-    }
-    qRefreshGsPalette(frame);
-    if (!s_DirectClutResident) {
-        GPPrimUploadTexture((int)clutTBP, 64, 0, 0, GS_PSMCT32, (void *)s_GsPalette, 16, 16);
-        s_DirectClutResident = true;
-    }
+    const Nes_Emu::frame_t &frame = s_pEmu->frame(); if (!auroraOutBaseTBP || !QuicknesBridge_CanDirectGsVideo() || !frame.pixels || frame.pitch != QN_VIDEO_W) return false;
+    Uint32 texTBP = auroraOutBaseTBP + QN_GS_TEX_TBP_OFFSET, clutTBP = auroraOutBaseTBP + QN_GS_CLUT_TBP_OFFSET;
+    if (s_DirectUploadSerial != s_DirectFrameSerial) { GPPrimUploadTexture((int)texTBP, QN_GS_T8_TBW, 0, 0, GS_PSMT8, (void *)frame.pixels, QN_VIDEO_W, Nes_Emu::image_height); s_DirectUploadSerial = s_DirectFrameSerial; }
+    qRefreshGsPalette(frame); if (!s_DirectClutResident) { GPPrimUploadTexture((int)clutTBP, 64, 0, 0, GS_PSMCT32, (void *)s_GsPalette, 16, 16); s_DirectClutResident = true; }
     GPPrimSetTex(texTBP, QN_GS_T8_TBW, 9, 8, GS_PSMT8, clutTBP, 64, GS_PSMCT32, 0);
-    Uint32 mod = (Uint32)(128.0f * intensity + 0.5f);
-    if (mod > 128u) mod = 128u;
-    Uint32 modColor = 0x80000000u | (mod << 16) | (mod << 8) | mod;
+    Uint32 mod = (Uint32)(128.0f * intensity + 0.5f); if (mod > 128u) mod = 128u; Uint32 modColor = 0x80000000u | (mod << 16) | (mod << 8) | mod;
     Uint32 startY = (Uint32)logicalY + 16u;
     GPPrimTexRect(0, startY << 4, 8, 8, 1280u << 4, (startY + 480u) << 4, (256u << 4) + 8u, (Uint32)(Nes_Emu::image_height << 4) + 8u, 10u << 4, modColor, 0);
     return true;
@@ -494,13 +376,13 @@ void QuicknesBridge_RunFrame(Emu::SysInputT *pInput, CRenderSurface *pTarget, CM
     if (!s_GameLoaded || !s_pEmu) return;
     s_TurboPhase = (((s_TurboFrame >> s_TurboSpeedShift) & 1U) == 0U);
     ++s_TurboFrame;
-    if (pInput && (pInput->uPad & SNESIO_JOY_L)) {
+    if (pInput && pInput->uPad && ((*pInput->uPad) & SNESIO_JOY_L)) {
         quicknes_snesticle_set_microphone(1);
     } else {
         quicknes_snesticle_set_microphone(0);
     }
-    Uint8 p1 = pInput ? qMapPad(pInput->uPad) : 0;
-    Uint8 p2 = pInput ? qMapPad(pInput->uPad) : 0;
+    Uint8 p1 = (pInput && pInput->uPad) ? qMapPad(*pInput->uPad) : 0;
+    Uint8 p2 = (pInput && pInput->uPad) ? qMapPad(*pInput->uPad) : 0;
     if (s_LightGunMode != 0) {
         qUpdateLightGunAim(pInput);
         if (s_LightGunMode == 1) {
