@@ -31,7 +31,6 @@ extern "C" {
 #include "Data_Reader.h"
 #include "abstract_file.h"
 #include "nes_ntsc.h"
-
 extern "C" void quicknes_snesticle_set_duty_swap(int enable);
 extern "C" void quicknes_snesticle_set_microphone(int enable);
 extern "C" void quicknes_snesticle_ext_set_arkanoid(int enable);
