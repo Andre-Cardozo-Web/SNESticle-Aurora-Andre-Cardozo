@@ -8,6 +8,7 @@ bool FceummFdsBridge_DrawDirectGs(Uint32 auroraOutBaseTBP, Int32 logicalY, Float
         s_DirectUploadSerial = s_DirectFrameSerial;
     }
     if (!s_DirectClutResident) {
+        
         GPPrimUploadTexture((int)clutTBP, 64, 0, 0, GS_PSMCT32, s_GsPalette, 16, 16);
         s_DirectClutResident = true;
     }
