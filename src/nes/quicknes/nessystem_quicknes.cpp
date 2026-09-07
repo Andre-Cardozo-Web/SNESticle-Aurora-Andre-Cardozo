@@ -170,8 +170,8 @@ static void qUpdateLightGunAim(Emu::SysInputT *pInput) {
         ay = (packed >> 24) & 0xFFU;
         offscreen = (InputGetPadData(0) & (PAD_L2 | PAD_SQUARE)) == (PAD_L2 | PAD_SQUARE);
     }
-    if (pInput && pInput->uPad != EMUSYS_DEVICE_DISCONNECTED) {
-        trigger = ((*pInput->uPad) & SNESIO_JOY_B) != 0;
+    if (pInput) {
+        trigger = (pInput->uPad[0] & SNESIO_JOY_B) != 0;
     }
     if (offscreen) {
         trigger = true;
@@ -187,7 +187,7 @@ static void qUpdateLightGunAim(Emu::SysInputT *pInput) {
     quicknes_snesticle_ext_set_lightgun_state((int)(s_GunX >> 8), (int)(s_GunY >> 8), trigger ? 1 : 0, offscreen ? 1 : 0);
 }
 
-static void qUpdateArkanoidVaus(Emu::SysInputT *pInput) { unsigned axis = 0x80U; if (!s_ArkanoidVaus) return; if (InputIsPadConnected(0)) { axis = (InputGetPadAnalog(0) >> 16) & 0xFFU; } int fire = (pInput && pInput->uPad != EMUSYS_DEVICE_DISCONNECTED && ((*pInput->uPad) & SNESIO_JOY_B)) ? 1 : 0; quicknes_snesticle_ext_set_arkanoid_state(0x54U + (axis * 160U + 127U) / 255U, fire); }
+static void qUpdateArkanoidVaus(Emu::SysInputT *pInput) { unsigned axis = 0x80U; if (!s_ArkanoidVaus) return; if (InputIsPadConnected(0)) { axis = (InputGetPadAnalog(0) >> 16) & 0xFFU; } int fire = (pInput && (pInput->uPad[0] & SNESIO_JOY_B)) ? 1 : 0; quicknes_snesticle_ext_set_arkanoid_state(0x54U + (axis * 160U + 127U) / 255U, fire); }
 static void qResetDirectVideo(void) { memset(s_DirectLastPalette, 0, sizeof(s_DirectLastPalette)); s_DirectPaletteValid = s_DirectClutResident = s_DirectReady = false; s_DirectFrameSerial = s_DirectUploadSerial = 0; }
 static void qResetTransient(void) { memset(s_Video, 0, sizeof(s_Video)); memset(s_LastFramePalette, 0, sizeof(s_LastFramePalette)); memset(s_Pending, 0, sizeof(s_Pending)); s_PendingCount = 0; s_PaletteValid = false; qResetDirectVideo(); s_TurboPhase = false; s_TurboFrame = s_TurboSpeedShift = 0; s_SkipVideoNext = false; s_LastSpriteScanlineLimit = s_LastSpriteScreenLimit = -1; }
 static Uint8 qMapPad(Uint16 pad) { if (pad == EMUSYS_DEVICE_DISCONNECTED) return 0; Uint8 nes = 0; if (pad & SNESIO_JOY_B) nes |= 0x01; if (pad & SNESIO_JOY_Y) nes |= 0x02; if ((pad & SNESIO_JOY_A) && s_TurboPhase) nes |= 0x01; if ((pad & SNESIO_JOY_X) && s_TurboPhase) nes |= 0x02; if (pad & SNESIO_JOY_SELECT) nes |= 0x04; if (pad & SNESIO_JOY_START) nes |= 0x08; if (pad & SNESIO_JOY_UP) nes |= 0x10; if (pad & SNESIO_JOY_DOWN) nes |= 0x20; if (pad & SNESIO_JOY_LEFT) nes |= 0x40; if (pad & SNESIO_JOY_RIGHT) nes |= 0x80; return nes; }
@@ -376,13 +376,13 @@ void QuicknesBridge_RunFrame(Emu::SysInputT *pInput, CRenderSurface *pTarget, CM
     if (!s_GameLoaded || !s_pEmu) return;
     s_TurboPhase = (((s_TurboFrame >> s_TurboSpeedShift) & 1U) == 0U);
     ++s_TurboFrame;
-    if (pInput && ((*pInput->uPad) & SNESIO_JOY_L)) {
+    if (pInput && (pInput->uPad[0] & SNESIO_JOY_L)) {
         quicknes_snesticle_set_microphone(1);
     } else {
         quicknes_snesticle_set_microphone(0);
     }
-    Uint8 p1 = pInput ? qMapPad(*pInput->uPad) : 0;
-    Uint8 p2 = pInput ? qMapPad(*pInput->uPad) : 0;
+    Uint8 p1 = pInput ? qMapPad(pInput->uPad[0]) : 0;
+    Uint8 p2 = pInput ? qMapPad(pInput->uPad[0]) : 0;
     if (s_LightGunMode != 0) {
         qUpdateLightGunAim(pInput);
         if (s_LightGunMode == 1) {
@@ -399,18 +399,6 @@ void QuicknesBridge_RunFrame(Emu::SysInputT *pInput, CRenderSurface *pTarget, CM
         qDrainAudio(pMixBuf);
         return;
     }
-    const Nes_Emu::frame_t &frame = s_pEmu->frame();
-    s_DirectReady = frame.pixels && frame.pitch == QN_VIDEO_W && (((uintptr_t)frame.pixels & 15u) == 0u);
-    if (s_DirectReady) {
-        if (++s_DirectFrameSerial == 0) {
-            s_DirectFrameSerial = 1;
-            s_DirectUploadSerial = 0;
-        }
-    } else {
-        qRenderFrame(pTarget);
-    }
-    qDrainAudio(pMixBuf);
-}
     const Nes_Emu::frame_t &frame = s_pEmu->frame();
     s_DirectReady = frame.pixels && frame.pitch == QN_VIDEO_W && (((uintptr_t)frame.pixels & 15u) == 0u);
     if (s_DirectReady) {
