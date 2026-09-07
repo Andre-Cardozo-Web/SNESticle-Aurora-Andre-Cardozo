@@ -730,6 +730,298 @@ static void _FetchCHR4_64(const Uint16 *pVram, Uint32 uBaseAddr, const SnesRende
 }
 
 
+/* AURORA_ACCURACY_MODE5_HIRES_DECIMATE_V1_1_20260906
+ *
+ * Aurora's output stays 256 pixels wide, so represent each real 16-sample
+ * Mode 5 character pair by one sharp 8-sample line. This is not a generic
+ * scaler: it follows the PPU/Snes9x hires converter phases.
+ *
+ * Normal main-screen Mode 5 samples odd physical columns from N and N+1.
+ * H-flip changes the converter to the even source phase, then reverses the
+ * complete eight-sample result. Mosaic selects the even phase for the
+ * non-flipped main converter as well.
+ */
+
+static _INLINE Uint32 _SnesPPUMode5Pack4(Uint64 uData, Bool bOdd)
+{
+	Uint32 uOut;
+
+	if (bOdd)
+		uData >>= 8;
+
+	uOut  = (Uint32)((uData >>  0) & 0xFF) <<  0;
+	uOut |= (Uint32)((uData >> 16) & 0xFF) <<  8;
+	uOut |= (Uint32)((uData >> 32) & 0xFF) << 16;
+	uOut |= (Uint32)((uData >> 48) & 0xFF) << 24;
+	return uOut;
+}
+
+
+static _INLINE Uint8 _SnesPPUMode5PackMask4(Uint32 uMask, Bool bOdd)
+{
+	if (bOdd)
+		uMask >>= 1;
+
+	// Compress source mask bits 0,2,4,6 to destination bits 0..3.
+	return (Uint8)(
+		  ((uMask >> 0) & 1)
+		| ((uMask >> 1) & 2)
+		| ((uMask >> 2) & 4)
+		| ((uMask >> 3) & 8)
+	);
+}
+
+
+static _INLINE Uint64 _SnesPPUMode5PackPair(
+	Uint64 uRow0,
+	Uint64 uRow1,
+	Bool bHFlip,
+	Bool bMosaic)
+{
+	/*
+	 * Snes9x converter phase:
+	 *   main/no mosaic: normal=odd,  H-flip=even
+	 *   main/mosaic:    normal=even, H-flip=odd
+	 */
+	Bool bOdd = (Bool)((!bMosaic) ^ bHFlip);
+	Uint64 uOut =
+		(Uint64)_SnesPPUMode5Pack4(uRow0, bOdd) |
+		((Uint64)_SnesPPUMode5Pack4(uRow1, bOdd) << 32);
+
+	if (bHFlip)
+		uOut = SnesPPUChrCacheReverseBytes(uOut);
+
+	return uOut;
+}
+
+
+static _INLINE Uint8 _SnesPPUMode5PackPairMask(
+	Uint32 uMask0,
+	Uint32 uMask1,
+	Bool bHFlip,
+	Bool bMosaic)
+{
+	Bool bOdd = (Bool)((!bMosaic) ^ bHFlip);
+	Uint8 uOut =
+		(Uint8)(
+			_SnesPPUMode5PackMask4(uMask0, bOdd) |
+			(_SnesPPUMode5PackMask4(uMask1, bOdd) << 4)
+		);
+
+	if (bHFlip)
+		uOut = SnesPPUChrCacheReverseMask(uOut);
+
+	return uOut;
+}
+
+
+static _INLINE void _SnesPPUMode5GetCHR2Row64(
+	const Uint16 *pVram,
+	Uint32 uRowAddr,
+	Uint64 *pData,
+	Uint32 *pOpaque)
+{
+#if SNPPU_BG_CACHE
+	if (SnesPPUChrCacheLookup2(
+		&_SnesPPU_ChrCache, uRowAddr, FALSE, pData, pOpaque))
+	{
+#if SNDBG_LOG
+		g_DbgBGCacheHits++;
+#endif
+		return;
+	}
+#endif
+
+	{
+		const SnesPPUTile2T *pTile2 =
+			(const SnesPPUTile2T *)(pVram + uRowAddr);
+		const SnesChrLookup64T *pLookup =
+			(const SnesChrLookup64T *)&_SnesPPU_PlaneLookup[0];
+		Uint32 uPlane0 = pTile2->uPlane01[0][0];
+		Uint32 uPlane1 = pTile2->uPlane01[0][1];
+
+#if SNPPU_BG_CACHE && SNDBG_LOG
+		g_DbgBGCacheMisses++;
+#endif
+		*pOpaque = _SnesPPU_HFlipLookup[1][uPlane0 | uPlane1];
+		*pData  = (*pLookup)[uPlane0] << 0;
+		*pData |= (*pLookup)[uPlane1] << 1;
+
+#if SNPPU_BG_CACHE
+		SnesPPUChrCacheStore2(
+			&_SnesPPU_ChrCache, uRowAddr, *pData, *pOpaque);
+#endif
+	}
+}
+
+
+static _INLINE void _SnesPPUMode5GetCHR4Row64(
+	const Uint16 *pVram,
+	Uint32 uRowAddr,
+	Uint64 *pData,
+	Uint32 *pOpaque)
+{
+#if SNPPU_BG_CACHE
+	if (SnesPPUChrCacheLookup4(
+		&_SnesPPU_ChrCache, uRowAddr, FALSE, pData, pOpaque))
+	{
+#if SNDBG_LOG
+		g_DbgBGCacheHits++;
+#endif
+		return;
+	}
+#endif
+
+	{
+		const SnesPPUTile4T *pTile4 =
+			(const SnesPPUTile4T *)(pVram + uRowAddr);
+		const SnesChrLookup64T *pLookup =
+			(const SnesChrLookup64T *)&_SnesPPU_PlaneLookup[0];
+		Uint32 uPlane0 = pTile4->uPlane01[0][0];
+		Uint32 uPlane1 = pTile4->uPlane01[0][1];
+		Uint32 uPlane2 = pTile4->uPlane23[0][0];
+		Uint32 uPlane3 = pTile4->uPlane23[0][1];
+
+#if SNPPU_BG_CACHE && SNDBG_LOG
+		g_DbgBGCacheMisses++;
+#endif
+		*pOpaque = _SnesPPU_HFlipLookup[1][
+			uPlane0 | uPlane1 | uPlane2 | uPlane3
+		];
+		*pData  = (*pLookup)[uPlane0] << 0;
+		*pData |= (*pLookup)[uPlane1] << 1;
+		*pData |= (*pLookup)[uPlane2] << 2;
+		*pData |= (*pLookup)[uPlane3] << 3;
+
+#if SNPPU_BG_CACHE
+		SnesPPUChrCacheStore4(
+			&_SnesPPU_ChrCache, uRowAddr, *pData, *pOpaque);
+#endif
+	}
+}
+
+
+static void _FetchCHR2Mode5_64(
+	const Uint16 *pVram,
+	Uint32 uBaseAddr,
+	const SnesRenderTileT *pTiles,
+	Int32 nTiles,
+	Uint32 uScrollY,
+	Uint8 *pDest,
+	Uint8 *pMask,
+	Uint64 *pPalLookup,
+	Bool bMosaic)
+{
+	PROF_ENTER("_FetchCHR2Mode5_64");
+
+	while (nTiles > 0)
+	{
+		Uint32 uTile0 = pTiles->uTile & 0x03FF;
+		Uint32 uTile1 = (uTile0 + 1) & 0x03FF;
+		Uint32 uRow = (uScrollY + pTiles->uOffsetY) & 7;
+		Uint32 uAddr0;
+		Uint32 uAddr1;
+		Uint64 uRow0;
+		Uint64 uRow1;
+		Uint64 uOut;
+		Uint32 uMask0;
+		Uint32 uMask1;
+		Uint8 uOutMask;
+		Bool bHFlip = (pTiles->uFlip & 1) != 0;
+
+		if (pTiles->uFlip & 2)
+			uRow ^= 7;
+
+		uAddr0 = ((uBaseAddr + uTile0 * 8) & 0x7FFF) + uRow;
+		uAddr1 = ((uBaseAddr + uTile1 * 8) & 0x7FFF) + uRow;
+
+		_SnesPPUMode5GetCHR2Row64(
+			pVram, uAddr0, &uRow0, &uMask0);
+		_SnesPPUMode5GetCHR2Row64(
+			pVram, uAddr1, &uRow1, &uMask1);
+
+		uOut = _SnesPPUMode5PackPair(
+			uRow0, uRow1, bHFlip, bMosaic);
+		uOutMask = _SnesPPUMode5PackPairMask(
+			uMask0, uMask1, bHFlip, bMosaic);
+
+		uOut |= pPalLookup[pTiles->uPal];
+
+		pMask[0] = uOutMask;
+		pMask[SNPPU_BGPLANE_SIZE] =
+			(pTiles->uPal & 8) ? uOutMask : 0;
+		((Uint64 *)pDest)[0] = uOut;
+
+		pDest += 8;
+		pMask++;
+		pTiles++;
+		nTiles--;
+	}
+
+	PROF_LEAVE("_FetchCHR2Mode5_64");
+}
+
+
+static void _FetchCHR4Mode5_64(
+	const Uint16 *pVram,
+	Uint32 uBaseAddr,
+	const SnesRenderTileT *pTiles,
+	Int32 nTiles,
+	Uint32 uScrollY,
+	Uint8 *pDest,
+	Uint8 *pMask,
+	Bool bMosaic)
+{
+	PROF_ENTER("_FetchCHR4Mode5_64");
+
+	while (nTiles > 0)
+	{
+		Uint32 uTile0 = pTiles->uTile & 0x03FF;
+		Uint32 uTile1 = (uTile0 + 1) & 0x03FF;
+		Uint32 uRow = (uScrollY + pTiles->uOffsetY) & 7;
+		Uint32 uAddr0;
+		Uint32 uAddr1;
+		Uint64 uRow0;
+		Uint64 uRow1;
+		Uint64 uOut;
+		Uint32 uMask0;
+		Uint32 uMask1;
+		Uint8 uOutMask;
+		Bool bHFlip = (pTiles->uFlip & 1) != 0;
+
+		if (pTiles->uFlip & 2)
+			uRow ^= 7;
+
+		uAddr0 = ((uBaseAddr + uTile0 * 16) & 0x7FFF) + uRow;
+		uAddr1 = ((uBaseAddr + uTile1 * 16) & 0x7FFF) + uRow;
+
+		_SnesPPUMode5GetCHR4Row64(
+			pVram, uAddr0, &uRow0, &uMask0);
+		_SnesPPUMode5GetCHR4Row64(
+			pVram, uAddr1, &uRow1, &uMask1);
+
+		uOut = _SnesPPUMode5PackPair(
+			uRow0, uRow1, bHFlip, bMosaic);
+		uOutMask = _SnesPPUMode5PackPairMask(
+			uMask0, uMask1, bHFlip, bMosaic);
+
+		uOut |= _SnesPPU_Tile4PalLookup64[pTiles->uPal];
+
+		pMask[0] = uOutMask;
+		pMask[SNPPU_BGPLANE_SIZE] =
+			(pTiles->uPal & 8) ? uOutMask : 0;
+		((Uint64 *)pDest)[0] = uOut;
+
+		pDest += 8;
+		pMask++;
+		pTiles++;
+		nTiles--;
+	}
+
+	PROF_LEAVE("_FetchCHR4Mode5_64");
+}
+
+
 static void _FetchCHR8_64(const Uint16 *pVram, Uint32 uBaseAddr, const SnesRenderTileT *pTiles, Int32 nTiles, Uint32 uScrollY, Uint8 *pDest, Uint8 *pMask)
 {
 	SNPPUBg8FlipT *pFlip;
@@ -819,12 +1111,54 @@ static void _FetchCHR_64(Uint8 *pLine, SnesPPU *pPPU, SnesBGInfoT *pBGInfo, stru
 	switch (pBGInfo->uBitDepth)
 	{
 	case 2:
-		// fetch chr (2-bit)
-		_FetchCHR2_64(pPPU->GetVramPtr(0), pBGInfo->uChrAddr, pTiles, nTiles, uScrollY & 7, pLine, pMask, _SnesPPU_Tile2PalLookup64[pBGInfo->uPalBase]);
+		// Mode 5 decodes the adjacent character pair N/N+1.
+		if ((pPPU->GetRegs()->bgmode & 7) == 5)
+			_FetchCHR2Mode5_64(
+				pPPU->GetVramPtr(0),
+				pBGInfo->uChrAddr,
+				pTiles,
+				nTiles,
+				uScrollY & 7,
+				pLine,
+				pMask,
+				_SnesPPU_Tile2PalLookup64[pBGInfo->uPalBase],
+				(pPPU->GetRegs()->mosaic & 0x02) != 0
+			);
+		else
+			_FetchCHR2_64(
+				pPPU->GetVramPtr(0),
+				pBGInfo->uChrAddr,
+				pTiles,
+				nTiles,
+				uScrollY & 7,
+				pLine,
+				pMask,
+				_SnesPPU_Tile2PalLookup64[pBGInfo->uPalBase]
+			);
 		break;
 	case 4:
-		// fetch chr (4-bit)
-		_FetchCHR4_64(pPPU->GetVramPtr(0), pBGInfo->uChrAddr, pTiles, nTiles, uScrollY & 7, pLine, pMask);
+		// Mode 5 decodes the adjacent character pair N/N+1.
+		if ((pPPU->GetRegs()->bgmode & 7) == 5)
+			_FetchCHR4Mode5_64(
+				pPPU->GetVramPtr(0),
+				pBGInfo->uChrAddr,
+				pTiles,
+				nTiles,
+				uScrollY & 7,
+				pLine,
+				pMask,
+				(pPPU->GetRegs()->mosaic & 0x01) != 0
+			);
+		else
+			_FetchCHR4_64(
+				pPPU->GetVramPtr(0),
+				pBGInfo->uChrAddr,
+				pTiles,
+				nTiles,
+				uScrollY & 7,
+				pLine,
+				pMask
+			);
 		break;
 	case 8:
 		// fetch chr (8-bit)

@@ -714,16 +714,19 @@ void _MainLoopUnloadRom()
      * Flush a dirty pack before SetRom(NULL), while _RomName and the backing
      * still identify the departing game. Ordinary SNES/SGB/copier paths are
      * untouched; a slotted game may own both <game>.srm and <game>.mpk. */
+    /* AURORA_BSXSLOT_MEMORY_PACK_V1_3_UNLOAD_BUNDLE_20260906
+     * At ROM lifetime end, sample ordinary SRAM even when the flash itself is
+     * currently clean. If either member changed, persist the coherent bundle. */
     if (_pSystem == _pSnes && _pSnes &&
         !_pSnes->IsSuperWildCard() &&
         !_pSnes->IsSuperGameBoy() &&
-        _pSnes->HasBSXMemoryPack() &&
-        _pSnes->IsBSXMemoryPackDirty())
+        _pSnes->HasBSXMemoryPack())
     {
         (void)_MainLoopForceCheckSRAM();
+        if (_MainLoop_SRAMUpdated || _pSnes->IsBSXMemoryPackDirty())
         {
             Bool bSaved = _MainLoopSaveSRAM(TRUE);
-            ConPrint("BS-X Memory Pack unload flush: %s\n",
+            ConPrint("BS-X Memory Pack unload bundle flush: %s\n",
                      bSaved ? "saved" : "FAILED");
             MainLoopStatusPrintf(
                 bSaved ? 120 : 240,

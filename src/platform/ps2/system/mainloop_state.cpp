@@ -1020,14 +1020,29 @@ static Bool _MainLoopLoadBSXMemoryPackFrom(MainLoopSramDeviceE eDevice)
     return TRUE;
 }
 
-static void _MainLoopLoadBSXMemoryPack(void)
+/* AURORA_BSXSLOT_MEMORY_PACK_V1_3_COHERENT_BUNDLE_VERIFY_20260906
+ * Keep ordinary cartridge SRAM and the slotted Memory Pack on the same save
+ * device whenever an SRAM backing was actually selected.  This prevents AUTO
+ * from pairing an SRAM file from MC with a stale .mpk from USB (or vice versa).
+ * If there is no ordinary SRAM backing, AUTO retains the normal USB -> MC
+ * search so Memory-Pack-only carts still work as before. */
+static void _MainLoopLoadBSXMemoryPack(MainLoopSramDeviceE ePreferredDevice)
 {
     Bool bLoaded = FALSE;
 
     if (_pSystem != _pSnes || !_pSnes || !_pSnes->HasBSXMemoryPack())
         return;
 
-    if (_MainLoop_SramDevice == MAINLOOP_SRAMDEVICE_USB)
+    if (ePreferredDevice == MAINLOOP_SRAMDEVICE_USB)
+    {
+        if (_MainLoopSramUsbReady())
+            bLoaded = _MainLoopLoadBSXMemoryPackFrom(MAINLOOP_SRAMDEVICE_USB);
+    }
+    else if (ePreferredDevice == MAINLOOP_SRAMDEVICE_MEMCARD)
+    {
+        bLoaded = _MainLoopLoadBSXMemoryPackFrom(MAINLOOP_SRAMDEVICE_MEMCARD);
+    }
+    else if (_MainLoop_SramDevice == MAINLOOP_SRAMDEVICE_USB)
     {
         if (_MainLoopSramUsbReady())
             bLoaded = _MainLoopLoadBSXMemoryPackFrom(MAINLOOP_SRAMDEVICE_USB);
@@ -1045,8 +1060,54 @@ static void _MainLoopLoadBSXMemoryPack(void)
     }
 
     _pSnes->ClearBSXMemoryPackDirty();
-    ConPrint("BS-X Memory Pack backing: %s\n",
-             bLoaded ? "loaded" : "blank/erased");
+    ConPrint("BS-X Memory Pack backing: %s (device=%s)\n",
+             bLoaded ? "loaded" : "blank/erased",
+             ePreferredDevice == MAINLOOP_SRAMDEVICE_USB ? "USB" :
+             ePreferredDevice == MAINLOOP_SRAMDEVICE_MEMCARD ? "MC" : "AUTO");
+}
+
+static Bool _MainLoopVerifyBSXMemoryPackFile(const Char *pPath,
+                                               const Uint8 *pData,
+                                               Uint32 nBytes)
+{
+    struct stat Status;
+    FILE *pFile;
+    Uint8 Verify[4096];
+    Uint32 done = 0;
+    Bool bOK = TRUE;
+
+    if (!pPath || !*pPath || !pData ||
+        nBytes != (Uint32)SNES_BSX_MEMORY_PACK_BYTES)
+        return FALSE;
+
+    if (stat(pPath, &Status) != 0 || S_ISDIR(Status.st_mode) ||
+        (Uint32)Status.st_size != nBytes)
+        return FALSE;
+
+    pFile = fopen(pPath, "rb");
+    if (!pFile)
+        return FALSE;
+
+    while (done < nBytes)
+    {
+        Uint32 chunk = nBytes - done;
+        size_t got;
+        if (chunk > (Uint32)sizeof(Verify))
+            chunk = (Uint32)sizeof(Verify);
+        got = fread(Verify, 1, (size_t)chunk, pFile);
+        if (got != (size_t)chunk ||
+            memcmp(Verify, pData + done, (size_t)chunk) != 0)
+        {
+            bOK = FALSE;
+            break;
+        }
+        done += chunk;
+    }
+
+    if (fclose(pFile) != 0)
+        bOK = FALSE;
+
+    return bOK && done == nBytes;
 }
 
 static Bool _MainLoopSaveBSXMemoryPackTo(MainLoopSramDeviceE eDevice)
@@ -1070,11 +1131,23 @@ static Bool _MainLoopSaveBSXMemoryPackTo(MainLoopSramDeviceE eDevice)
 
     _MainLoopBSXMemoryPackBuildPath(Path, sizeof(Path), pRoot);
     if (!_MainLoopSramWriteFile(Path, pData, (Uint32)nBytes))
+    {
+        ConPrint("BS-X Memory Pack write FAILED: %s\n", Path);
         return FALSE;
+    }
 
-    _pSnes->ClearBSXMemoryPackDirty();
-    ConPrint("BS-X Memory Pack saved: %s\n", Path);
-    /* AURORA_BSXSLOT_MEMORY_PACK_V1_2_IO_WATCH_SGB_STATUS_20260906: cold-path summary only; never logs from flash accesses. */
+    /* V1.3: verify storage contents without allocating another 1 MiB buffer.
+     * A 4 KiB streaming compare runs only at an explicit save boundary. */
+    if (!_MainLoopVerifyBSXMemoryPackFile(Path, pData, (Uint32)nBytes))
+    {
+        ConPrint("BS-X Memory Pack verify FAILED: %s\n", Path);
+        return FALSE;
+    }
+
+    /* Do NOT clear dirty here. AUTO may still fail on another member of the
+     * save bundle and fall back USB -> MC. The outer transaction clears the
+     * pack only after the entire device write succeeds. */
+    ConPrint("BS-X Memory Pack saved+verified: %s\n", Path);
     ConPrint("[BSX/MPK] io save: R=%u W=%u prog=%u erase=%u chip=%u status=%u vendor=%u\n",
              (unsigned)_pSnes->GetBSXMemoryPackReadCount(),
              (unsigned)_pSnes->GetBSXMemoryPackWriteCount(),
@@ -1495,6 +1568,12 @@ static Bool _MainLoopSaveSRAMTo(MainLoopSramDeviceE eDevice, Bool bSync)
 
     if (bAny && bOK)
     {
+        /* MPK V1.3: commit dirty state only after the whole save bundle for
+         * this device succeeded. This keeps AUTO fallback transactional. */
+        if (_pSystem == _pSnes && _pSnes &&
+            _pSnes->HasBSXMemoryPack() && _pSnes->IsBSXMemoryPackDirty())
+            _pSnes->ClearBSXMemoryPackDirty();
+
         _MainLoop_SRAMUpdated = FALSE;
         return TRUE;
     }
@@ -1609,25 +1688,33 @@ void _MainLoopLoadSRAM()
     Bool bLoaded = FALSE;
     Bool bLegacy = FALSE;
     Bool bMcFallback = FALSE;
+    MainLoopSramDeviceE eLoadedDevice = MAINLOOP_SRAMDEVICE_AUTO;
 
     if (pSRAM && nSramBytes > 0)
     {
         if (_MainLoop_SramDevice == MAINLOOP_SRAMDEVICE_USB)
         {
             if (_MainLoopSramUsbReady())
+            {
                 bLoaded = _MainLoopLoadSRAMFrom(
                     MAINLOOP_SRAMDEVICE_USB, pSRAM, nSramBytes, &bLegacy);
+                if (bLoaded) eLoadedDevice = MAINLOOP_SRAMDEVICE_USB;
+            }
         }
         else if (_MainLoop_SramDevice == MAINLOOP_SRAMDEVICE_MEMCARD)
         {
             bLoaded = _MainLoopLoadSRAMFrom(
                 MAINLOOP_SRAMDEVICE_MEMCARD, pSRAM, nSramBytes, &bLegacy);
+            if (bLoaded) eLoadedDevice = MAINLOOP_SRAMDEVICE_MEMCARD;
         }
         else
         {
             if (_MainLoopSramUsbReady())
+            {
                 bLoaded = _MainLoopLoadSRAMFrom(
                     MAINLOOP_SRAMDEVICE_USB, pSRAM, nSramBytes, &bLegacy);
+                if (bLoaded) eLoadedDevice = MAINLOOP_SRAMDEVICE_USB;
+            }
 
             if (!bLoaded)
             {
@@ -1638,6 +1725,7 @@ void _MainLoopLoadSRAM()
                 {
                     bLegacy = bMcLegacy;
                     bMcFallback = TRUE;
+                    eLoadedDevice = MAINLOOP_SRAMDEVICE_MEMCARD;
                 }
             }
         }
@@ -1661,7 +1749,8 @@ void _MainLoopLoadSRAM()
     if (_pSystem == _pSnes)
     {
         _MainLoopLoadSnesTurboFile();
-        _MainLoopLoadBSXMemoryPack(); /* AURORA_BSXSLOT_MEMORY_PACK_V1_20260906_STATE_CPP */
+        _MainLoopLoadBSXMemoryPack(
+            bLoaded ? eLoadedDevice : MAINLOOP_SRAMDEVICE_AUTO);
     }
 
     _MainLoop_SaveCounter = 0;

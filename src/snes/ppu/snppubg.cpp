@@ -415,6 +415,77 @@ Uint32 SnesPPURender::FetchBG(SnesBGInfoT *pBGInfo, struct SnesRenderTileT *pTil
 		uResult |= SNPPU_BGFLAGS_FETCHCHR;
 	}
 
+	/* AURORA_ACCURACY_MODE5_HIRES_DECIMATE_V1_1_20260906
+	 *
+	 * Mode 5 is 512-wide on the real PPU, but Aurora's PS2 pipeline is
+	 * deliberately kept 256-wide here. One tilemap entry still occupies
+	 * eight low-resolution coordinates horizontally: its sixteen physical
+	 * hires samples come from the adjacent character pair N/N+1.
+	 *
+	 * When BGMODE selects the large BG size, hires does NOT make the
+	 * tilemap cell 16 low-resolution pixels wide. Only the vertical axis
+	 * becomes 16 pixels tall. Fetch one map entry per 8 logical pixels and
+	 * select character +16 for the lower vertical half (swapped by V-flip).
+	 *
+	 * The paired-character horizontal expansion itself is handled later by
+	 * the Mode 5 CHR decimator in snppurender8.cpp.
+	 */
+	if (((m_pPPU->GetRegs()->bgmode & 7) == 5) && pBGInfo->uChrSize)
+	{
+		Uint32 uVHalf;
+		Int32 iTile;
+
+		uTileX = (uScrollX >> 3) & 63;
+		uTileY = (uScrollY >> 4) & 63;
+		uVHalf = (uScrollY >> 3) & 1;
+
+		// abstract map address: ss yyyyy xxxxx
+		uVramAddr = (uTileX & 0x1F) << 0;
+		uVramAddr|= (uTileY & 0x1F) << 5;
+		uVramAddr|= (uTileX >> 5) << 10;
+		uVramAddr|= (uTileY >> 5) << 11;
+
+		// Bit 13 is outside the 12-bit abstract map address and exists only
+		// in the cache key so crossing the upper/lower 8-line half refetches.
+		uVramAddr|= uVHalf << 13;
+
+		if (uVramAddr != (uOldVramAddr & 0xFFFF))
+		{
+#if SNDBG_LOG
+			g_DbgBGMapReloads++;
+#endif
+			_GetScreenPtrs(
+				pScreen,
+				m_pPPU,
+				pBGInfo->uScrAddr,
+				pBGInfo->uScrSize
+			);
+
+			_FetchBG8x8(
+				uVramAddr & 0x0FFF,
+				pTiles,
+				nTiles,
+				pScreen
+			);
+
+			for (iTile = 0; iTile < nTiles; iTile++)
+			{
+				// 16px vertical character layout: lower half is +16.
+				// V-flip swaps the two halves. Keep the 10-bit tile wrap.
+				if (uVHalf ^ ((pTiles[iTile].uFlip >> 1) & 1))
+					pTiles[iTile].uTile =
+						(Uint16)((pTiles[iTile].uTile + 16) & 0x03FF);
+			}
+
+			uResult |= SNPPU_BGFLAGS_FETCHCHR | SNPPU_BGFLAGS_FETCHPAL;
+		}
+
+		uVramAddr|= (uScrollX & 7) << 16;
+		uVramAddr|= (uScrollY & 7) << 24;
+		uOldVramAddr = uVramAddr;
+		return uResult;
+	}
+
 	// perform BG line caching
 	switch(pBGInfo->uChrSize)
 	{
