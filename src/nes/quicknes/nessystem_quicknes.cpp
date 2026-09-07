@@ -104,7 +104,7 @@ static void qGetRgb(unsigned ci, Uint8 *r, Uint8 *g, Uint8 *b) {
         *b = rgb.blue;
     }
 }
-static Uint32 s_GsPalette __attribute__((aligned(64)));
+static Uint32 s_GsPalette[256] __attribute__((aligned(64)));
 static short s_DirectLastPalette[Nes_Emu::max_palette_size];
 static bool s_DirectPaletteValid = false;
 static bool s_DirectClutResident = false;
