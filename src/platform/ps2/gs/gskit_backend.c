@@ -278,5 +278,287 @@ static void _GskApplyDisplay(void)
 }
 
 void GSK_Set240pVisibleWindow(int x, int width)
-...
-(o resto do código da Caixa 2 continua igual abaixo)
+{
+    if (x < 0 || width <= 0 || x + width > _gsk_fb_width)
+    {
+        GSK_Clear240pVisibleWindow();
+        return;
+    }
+
+    if (_gsk_240p_window_x == x && _gsk_240p_window_w == width)
+        return;
+
+    _gsk_240p_window_x = x;
+    _gsk_240p_window_w = width;
+    _GskApplyDisplay();
+}
+
+void GSK_Clear240pVisibleWindow(void)
+{
+    if (_gsk_240p_window_x < 0 && _gsk_240p_window_w == 0)
+        return;
+
+    _gsk_240p_window_x = -1;
+    _gsk_240p_window_w = 0;
+    _GskApplyDisplay();
+}
+
+void GSK_SetDisplayOffset(int x, int y)
+{
+    g_GskDispOffX = x;
+    g_GskDispOffY = y;
+    _GskApplyDisplay();
+}
+
+void GSK_SetGameplayYOffsetBias(int y)
+{
+    if (_gsk_game_y_bias == y)
+        return;
+
+    _gsk_game_y_bias = y;
+    _GskApplyDisplay();
+}
+
+void GSK_SetUi256On320Framebuffer(int on)
+{
+    on = on ? 1 : 0;
+    if (_gsk_ui256_on_320fb == on)
+        return;
+
+    _gsk_ui256_on_320fb = on;
+    _GskApplyDisplay();
+}
+
+void GSK_Set240pFramebufferWidth(int width)
+{
+    if (width != 256 && width != 320 && width != 512)
+        width = 256;
+
+    _gsk_240p_fb_width = width;
+}
+
+int GSK_Get240pFramebufferWidth(void)
+{
+    return _gsk_240p_fb_width;
+}
+
+int GSK_GetActiveFramebufferWidth(void)
+{
+    if (!_gsk_initialised || !_pGsGlobal)
+        return 0;
+    return _pGsGlobal->Width;
+}
+
+void GSK_GetPceDebugState(int *fbw, int *winw, int *dw, int *magh,
+                          int *startx, int *overscan, int *wide)
+{
+    if (fbw)      *fbw = _gsk_fb_width;
+    if (winw)     *winw = _gsk_240p_window_w;
+    if (dw)       *dw = _pGsGlobal ? _pGsGlobal->DW : -1;
+    if (magh)     *magh = _pGsGlobal ? _pGsGlobal->MagH : -1;
+    if (startx)   *startx = _pGsGlobal ? _pGsGlobal->StartX : -1;
+    if (overscan) *overscan = g_GskOverscan;
+    if (wide)     *wide = g_GskWidescreen;
+}
+
+void GSK_SetOverscan(int percent)
+{
+    if (percent < 0)   percent = 0;
+    if (percent > 100) percent = 100;
+    g_GskOverscan = percent;
+    _GskApplyDisplay();
+}
+
+void GSK_SetWidescreen(int on)
+{
+    g_GskWidescreen = on ? 1 : 0;
+    _GskApplyDisplay();
+}
+
+void GSK_SetNative240pPar(int on)
+{
+    on = on ? 1 : 0;
+    if (_gsk_native240p_par == on)
+        return;
+
+    _gsk_native240p_par = on;
+    _GskApplyDisplay();
+}
+
+void GSK_ReinitVideo(void)
+{
+    GSGLOBAL *oldGlobal;
+
+    if (!_gsk_initialised || !_pGsGlobal) {
+        return;
+    }
+
+    GSK_DrainAndWait();
+    oldGlobal = _pGsGlobal;
+
+    _gsk_initialised = 0;
+    _pGsGlobal = NULL;
+    gsKit_deinit_global(oldGlobal);
+
+    GSK_Init(_gsk_arg_w, _gsk_arg_h, _gsk_arg_dispx, _gsk_arg_dispy,
+             _gsk_arg_psm, _gsk_arg_psmz, _gsk_arg_mode, _gsk_arg_interlace);
+}
+
+int GSK_GetActiveVideoMode(void)
+{
+    return _gsk_active_mode;
+}
+
+Uint32 GSK_VramAllocTBP(Uint32 nBytes)
+{
+    u32 addr;
+
+    if (!_gsk_initialised || !_pGsGlobal) {
+        return 0;
+    }
+
+    addr = gsKit_vram_alloc(_pGsGlobal, nBytes, GSKIT_ALLOC_USERBUFFER);
+    if (addr == GSKIT_ALLOC_ERROR) {
+        return 0;
+    }
+    return addr / 256;
+}
+
+void GSK_DrainAndWait(void)
+{
+    if (!_gsk_initialised) {
+        return;
+    }
+
+    gsKit_queue_exec(_pGsGlobal);
+    gsKit_finish();
+    DmaSyncGIF();
+}
+
+void GSK_DrainForRawGif(void)
+{
+    if (!_gsk_initialised) {
+        return;
+    }
+
+    gsKit_queue_exec(_pGsGlobal);
+    DmaSyncGIF();
+}
+
+void GSK_SetGameplayFastClear(Bool enabled)
+{
+    _gsk_gameplay_fast_clear = enabled ? TRUE : FALSE;
+}
+
+void GSK_SetGameplaySkipClear(Bool enabled)
+{
+    _gsk_gameplay_skip_clear = enabled ? TRUE : FALSE;
+}
+
+void GSK_FlushFrame(void)
+{
+    if (!_gsk_initialised) {
+        return;
+    }
+
+    gsKit_queue_exec(_pGsGlobal);
+    gsKit_finish();
+}
+
+void GSK_SyncFlip(void)
+{
+    if (!_gsk_initialised) {
+        return;
+    }
+
+    gsKit_sync_flip(_pGsGlobal);
+    if (_gsk_240p_window_x >= 0)
+        _GskApplyDisplay();
+}
+
+void GSK_ResetFrame(void)
+{
+    GSGLOBAL *gs;
+    u64 *p_data;
+
+    if (!_gsk_initialised || !_pGsGlobal) {
+        return;
+    }
+
+    gs = _pGsGlobal;
+    p_data = (u64 *)gsKit_heap_alloc(gs, 4, 64, GIF_AD);
+    if (!p_data) {
+        return;
+    }
+
+    *p_data++ = GIF_TAG_AD(4);
+    *p_data++ = GIF_AD;
+    *p_data++ = GS_SETREG_FRAME_1(
+        gs->ScreenBuffer[gs->ActiveBuffer & 1] / 8192,
+        gs->Width / 64,
+        gs->PSM,
+        0);
+    *p_data++ = GS_REG_FRAME_1;
+    *p_data++ = GS_SETREG_XYOFFSET_1(gs->OffsetX, gs->OffsetY);
+    *p_data++ = GS_XYOFFSET_1;
+    *p_data++ = GS_SETREG_ALPHA(0, 1, 0, 1, 0x80);
+    *p_data++ = GS_REG_ALPHA_1;
+    *p_data++ = (u64)1;
+    *p_data++ = (u64)GS_REG_COLCLAMP;
+
+    {
+        u8 previous_alpha = gs->PrimAlphaEnable;
+        gs->PrimAlphaEnable = GS_SETTING_OFF;
+
+        if (_gsk_gameplay_skip_clear)
+        {
+        }
+        else if (_gsk_gameplay_fast_clear && gs->Width > 0 && gs->Height > 0)
+        {
+            int wanted_rows =
+                (_gsk_active_mode == GSK_VIDMODE_240P) ? 8 : 16;
+            int clear_rows =
+                (gs->Height < wanted_rows) ? gs->Height : wanted_rows;
+            u64 top_scissor = GS_SETREG_SCISSOR(
+                0, gs->Width - 1, 0, clear_rows - 1);
+            u64 full_scissor = GS_SETREG_SCISSOR(
+                0, gs->Width - 1, 0, gs->Height - 1);
+
+            gsKit_set_scissor(gs, top_scissor);
+            gsKit_clear(gs, 0);
+            gsKit_set_scissor(gs, full_scissor);
+        }
+        else
+        {
+            gsKit_clear(gs, 0);
+        }
+
+        gs->PrimAlphaEnable = previous_alpha;
+    }
+}
+
+void GSK_InvalidateTextureCache(void)
+{
+    _gsk_invalidate_pending = 1;
+}
+
+int GSK_TakeInvalidatePending(void)
+{
+    int p = _gsk_invalidate_pending;
+    _gsk_invalidate_pending = 0;
+    return p;
+}
+
+void *GSK_AsUncached(void *ptr)
+{
+    Uint32 addr = (Uint32)ptr;
+
+    if (!addr) {
+        return ptr;
+    }
+
+    assert((addr & 0xF0000000) == 0 &&
+           "GSK_AsUncached: pointer is outside physical RAM (<256MB)");
+
+    return (void *)(addr | 0x20000000);
+}
