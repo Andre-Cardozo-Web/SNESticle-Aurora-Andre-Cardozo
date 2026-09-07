@@ -57,6 +57,7 @@ static bool pdPadHas(int port, uint32_t mask) {
     if (port < 0 || port > 1) return false;
     return (s_PadData[port] & mask) != 0;
 }
+
 extern "C" void retro_video_refresh_cb(const void *data, unsigned width, unsigned height, size_t pitch) {
     if (!data || width > MD_VIDEO_W || height > MD_VIDEO_H) return;
     const Uint16 *src = (const Uint16 *)data;
@@ -102,10 +103,6 @@ extern "C" int16_t retro_input_state_cb(unsigned port, unsigned device, unsigned
         case 9: return pdPadHas(p, SNESIO_JOY_X) ? 1 : 0;
         case 10: return pdPadHas(p, SNESIO_JOY_L) ? 1 : 0;
         case 11: return pdPadHas(p, SNESIO_JOY_R) ? 1 : 0;
-        case 12: return pdPadHas(p, SNESIO_JOY_X) ? 1 : 0;
-        case 13: return pdPadHas(p, SNESIO_JOY_R) ? 1 : 0;
-        case 14: return pdPadHas(p, SNESIO_JOY_SELECT) ? 1 : 0;
-        case 15: return pdPadHas(p, SNESIO_JOY_START) ? 1 : 0;
         default: return 0;
     }
 }
@@ -138,7 +135,7 @@ bool PicoDriveBridge_DrawDirectGs(Uint32 auroraOutBaseTBP, Int32 logicalY, Float
     if (!auroraOutBaseTBP || !PicoDriveBridge_CanDirectGsVideo()) return false;
     Uint32 texTBP = auroraOutBaseTBP + 0x400;
     if (s_DirectUploadSerial != s_DirectFrameSerial) {
-        GPPrimUploadTexture((int)texTBP, 320, 0, 0, GS_PSMCT16, s_VideoBuffer, MD_VIDEO_W, MD_VIDEO_H);
+        GPPrimUploadTexture((int)texTBP, 320, 0, 0, GS_PSMCT16, (void *)s_VideoBuffer, MD_VIDEO_W, MD_VIDEO_H);
         s_DirectUploadSerial = s_DirectFrameSerial;
     }
     GPPrimSetTex(texTBP, 320, 4, 0, GS_PSMCT16, 0, 0, 0, 0);
@@ -149,6 +146,7 @@ bool PicoDriveBridge_DrawDirectGs(Uint32 auroraOutBaseTBP, Int32 logicalY, Float
     GPPrimTexRect(0, startY << 4, 8, 8, 1280u << 4, (startY + 480u) << 4, (Uint32)(MD_VIDEO_W << 4) + 8u, (Uint32)(MD_VIDEO_H << 4) + 8u, 10u << 4, modColor, 0);
     return true;
 }
+
 bool PicoDriveBridge_Init(void) {
     if (s_Initialized) return true;
     qResetTransient();
