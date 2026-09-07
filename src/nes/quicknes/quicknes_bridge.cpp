@@ -710,15 +710,20 @@ bool QuicknesBridge_DrawDirectGs(Uint32 auroraOutBaseTBP,
     if (mod > 128u) mod = 128u;
     modColor = 0x80000000u | (mod << 16) | (mod << 8) | mod;
 
-    /* Same logical rectangles and half-texel UVs as the old generic branch:
-       Y=2 in 240p, Y=4 in 480i/1080i, always native 256x240. */
-    GPPrimTexRect(0, (Uint32)logicalY << 4, 8, 8,
-                  256u << 4, (Uint32)(logicalY + 240) << 4,
+    /* ====================================================================
+     * BLOCO MODIFICADO: ESCALA INTEIRA HORIZONTAL 5X (256x5 = 1280)
+     * ==================================================================== */
+    Uint32 targetWidth  = 1280; // Preenche os 1280 pixels físicos do backend
+    Uint32 targetHeight = 480;  // Escala vertical perfeita de 2x (240x2)
+    Uint32 startY       = (Uint32)logicalY;
+
+    // Desenha o jogo do NES expandido diretamente por hardware via GPPrimTexRect
+    GPPrimTexRect(0, startY << 4, 8, 8,
+                  targetWidth << 4, (startY + targetHeight) << 4,
                   (256u << 4) + 8u, (240u << 4) + 8u,
                   10u << 4, modColor, 0);
     return true;
 }
-
 
 static void qDrainAudio(CMixBuffer *pMix)
 {
