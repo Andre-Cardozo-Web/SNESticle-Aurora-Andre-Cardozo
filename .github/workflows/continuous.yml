@@ -145,4 +145,3 @@ jobs:
 
           # AURORA_BRANDING_RELEASE_ASSET_V9_20260821
           gh release create continuous             build/SNESticle.elf             "$AURORA_SOURCE_BUNDLE"             /tmp/SOURCE-MANIFEST.txt             /tmp/SHA256SUMS.txt             LICENSE             BRANDING.md             LICENSES/PicoDrive-COPYING.txt             LICENSES/QuickNES-GPL-2.0.txt             LICENSES/Beetle-PCE-Fast-GPL-2.0.txt             LICENSES/FCEUmm-GPL-2.0.txt             LICENSES/SameBoy-Expat.txt             THIRD_PARTY.md             --target "$GITHUB_SHA"             --title "Continuous Build"             --prerelease             --notes-file CONTINUOUS_RELEASE.md  # AURORA_CONTINUOUS_RELEASE_FILE_V8_20260821
-
