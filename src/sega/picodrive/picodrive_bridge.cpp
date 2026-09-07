@@ -2203,46 +2203,50 @@ bool PicoDriveBridge_DrawDirectGs(Uint32 auroraOutBaseTBP, Float32 intensity)
 
 /* AURORA_SUPER_MAGIC_DRIVE_V1_20260902 */
 struct PdSmdStateEnvelope { Uint32 magic, coreBytes, smdBytes, reserved; };
-int PicoDriveBridge_GetStateSize(void)
-{
-    size_t core; unsigned int extra;
-    if(!s_GameLoaded)return 0;core=retro_serialize_size();if(!core)return 0;
-    if(!PicoDriveAurora_SmdIsActive())return core>0x7fffffffU?0:(int)core;
-    extra=PicoDriveAurora_SmdStateSize();if(!extra||core>0x7fffffffU-sizeof(PdSmdStateEnvelope)-extra)return 0;
-    return (int)(sizeof(PdSmdStateEnvelope)+core+extra);
-}
-int PicoDriveBridge_SaveState(void *pData,int nBytes)
-{
-    size_t core;unsigned int extra;if(!s_GameLoaded||!pData||nBytes<=0)return 0;core=retro_serialize_size();if(!core)return 0;
-    if(!PicoDriveAurora_SmdIsActive()){if(core!=(size_t)nBytes)return 0;return retro_serialize(pData,core)?(int)core:0;}
-    extra=PicoDriveAurora_SmdStateSize();if(!extra||(size_t)nBytes!=sizeof(PdSmdStateEnvelope)+core+extra)return 0;
-    PdSmdStateEnvelope h={0x314d5350u,(Uint32)core,extra,0};memcpy(pData,&h,sizeof(h));Uint8*cd=(Uint8*)pData+sizeof(h);Uint8*sd=cd+core;
-    if(!retro_serialize(cd,core))return 0;if(PicoDriveAurora_SmdSaveState(sd,extra)!=(int)extra)return 0;return nBytes;
-}
-bool PicoDriveBridge_LoadState(const void *pData,int nBytes)
-{
-    bool ok=false;if(!s_GameLoaded||!pData||nBytes<=0)return false;
-    if(!PicoDriveAurora_SmdIsActive())ok=retro_unserialize(pData,(size_t)nBytes);
-    else{PdSmdStateEnvelope h;if((size_t)nBytes<sizeof(h))return false;memcpy(&h,pData,sizeof(h));if(h.magic!=0x314d5350u||(size_t)nBytes!=sizeof(h)+h.coreBytes+h.smdBytes)return false;const Uint8*cs=(const Uint8*)pData+sizeof(h);const Uint8*ss=cs+h.coreBytes;if(!PicoDriveAurora_SmdPrepareLoadState(ss,h.smdBytes))return false;if(!retro_unserialize(cs,h.coreBytes))return false;if(!PicoDriveAurora_SmdLoadState(ss,h.smdBytes))return false;ok=true;pdSmdAdoptBatteryRam();}
-    if(ok){s_DirectClutValid=false;pdInvalidateDirectVideoInfo();pdAudioTailReset();}return ok;
+int PicoDriveBridge_GetStateSize(void) 
+{ 
+    if (!s_GameLoaded) return 0;
+    return core_retro_serialize_size(); 
 }
 
-int PicoDriveBridge_GetSRAMBytes(void)
-{
-    if (!s_GameLoaded || !pdHasFrontendSaveMemory())
-        return 0;
-    return s_SramBytes;
+int PicoDriveBridge_SaveState(void *sd, int extra) 
+{ 
+    if (!s_GameLoaded || !sd || extra <= 0) return 0;
+    
+    int nBytes = core_retro_serialize_size();
+    if (nBytes <= 0 || nBytes > extra) return 0;
+    
+    if (!retro_serialize(sd, (size_t)nBytes)) return 0;
+    if (PicoDriveAurora_SmdSaveState(sd, extra) != (int)extra) return 0;
+    
+    return nBytes; 
+}
+bool PicoDriveBridge_LoadState(const void *sd, int extra) 
+{ 
+    if (!s_GameLoaded || !sd || extra <= 0) return false;
+    
+    int nBytes = core_retro_serialize_size();
+    if (nBytes <= 0) return false;
+    
+    if (!retro_unserialize(sd, (size_t)nBytes)) return false;
+    PicoDriveAurora_SmdLoadState(sd, extra);
+    
+    qResetTransientAudio();
+    return true; 
+}
+int PicoDriveBridge_GetSRAMBytes(void) 
+{ 
+    if (!s_GameLoaded) return 0;
+    return PicoDriveAurora_GetSRamSize(); 
 }
 
-Uint8 *PicoDriveBridge_GetSRAMData(void)
-{
-    return PicoDriveBridge_GetSRAMBytes() > 0 ? s_pSramData : NULL;
+uint8_t *PicoDriveBridge_GetSRAMData(void) 
+{ 
+    if (!s_GameLoaded) return NULL;
+    return PicoDriveAurora_GetSRamPtr(); 
 }
 
-unsigned PicoDriveBridge_GetSampleRate(void)
-{
-    return (unsigned)s_AudioRate;
+unsigned PicoDriveBridge_GetSampleRate(void) 
+{ 
+    return 44100; 
 }
-
-
-/* AURORA_V4_11_CD_REALTIME_PACING_PCE_TOC_OFFSETS_20260830 */
