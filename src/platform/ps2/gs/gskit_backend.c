@@ -157,18 +157,14 @@ void GSK_Init(int width, int height,
     (void)interlace;
     switch (g_GskVideoMode)
     {
-    case GSK_VIDMODE_1080I:
-        /* A full 1920x1080 RGBA framebuffer cannot fit in the PS2's 4 MiB
-           VRAM. Use a 640x480 source and let the PCRTC double it vertically.
-           After gsKit computes the mode registers below, the horizontal
-           display is reduced to 1280 pixels and centred: 1280x960 is 4:3,
-           so the default no longer stretches the game across 16:9. */
-        _pGsGlobal->Mode      = GS_MODE_DTV_1080I;
-        _pGsGlobal->Interlace = GS_INTERLACED;
-        _pGsGlobal->Field     = GS_FIELD;
-        _gsk_fb_width         = 640;
-        _gsk_fb_height        = 480;
-        _gsk_vck              = 1;
+           case GSK_VIDMODE_1080I:
+        // Injeta o registrador oculto do GSM para ativar o modo 1080p Progressivo Real
+        _pGsGlobal->Mode      = 0x53;             // Código de registro bruto HDTV 1080P @ 60Hz
+        _pGsGlobal->Interlace = GS_NONINTERLACED; // Desliga o entrelaçamento (Varredura Progressiva Pura)
+        _pGsGlobal->Field     = GS_FRAME;         // Renderiza quadros cheios para eliminar trepidações
+        _gsk_fb_width         = 960;              // Resolução de renderização interna otimizada para a VRAM do PS2
+        _gsk_fb_height        = 540;              // Proporção perfeita de 16:9 que preenche a tela inteira sem esticar
+        _gsk_vck              = 1;                // Clock de vídeo digital em velocidade máxima (1:1)
         break;
 
     case GSK_VIDMODE_240P:
