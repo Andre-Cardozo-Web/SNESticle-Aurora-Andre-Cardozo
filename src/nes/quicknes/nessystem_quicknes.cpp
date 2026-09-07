@@ -1,5 +1,5 @@
-/* SNESTICLE_NESSYSTEM_QUICKNES
- * Static sub-system handler for QuickNES core on SNESticle/PS2.
+/* SNESTICLE_QUICKNES_BRIDGE
+ * Direct QuickNES Nes_Emu integration for SNESticle/PS2.
  */
 
 #include <stdio.h>
@@ -104,7 +104,6 @@ static void qGetRgb(unsigned ci, Uint8 *r, Uint8 *g, Uint8 *b) {
         *b = rgb.blue;
     }
 }
-
 static Uint32 s_GsPalette __attribute__((aligned(64)));
 static short s_DirectLastPalette[Nes_Emu::max_palette_size];
 static bool s_DirectPaletteValid = false;
@@ -116,6 +115,7 @@ static Uint32 s_DirectUploadSerial = 0;
 static Int16 s_AudioOut[QN_AUDIO_MAX + 4];
 static Int16 s_Pending[QN_AUDIO_MAX + 4];
 static int   s_PendingCount = 0;
+
 static Uint32 qCrc32(const Uint8 *pData, size_t nBytes) {
     static const Uint32 table = {
         0x00000000U, 0x1DB71064U, 0x3B6E20C8U, 0x26D930ACU,
@@ -171,7 +171,7 @@ static void qUpdateLightGunAim(Emu::SysInputT *pInput) {
         offscreen = (InputGetPadData(0) & (PAD_L2 | PAD_SQUARE)) == (PAD_L2 | PAD_SQUARE);
     }
     if (pInput && pInput->uPad != EMUSYS_DEVICE_DISCONNECTED) {
-        trigger = (pInput->uPad & SNESIO_JOY_B) != 0;
+        trigger = ((*pInput->uPad) & SNESIO_JOY_B) != 0;
     }
     if (offscreen) {
         trigger = true;
@@ -187,7 +187,7 @@ static void qUpdateLightGunAim(Emu::SysInputT *pInput) {
     quicknes_snesticle_ext_set_lightgun_state((int)(s_GunX >> 8), (int)(s_GunY >> 8), trigger ? 1 : 0, offscreen ? 1 : 0);
 }
 
-static void qUpdateArkanoidVaus(Emu::SysInputT *pInput) { unsigned axis = 0x80U; if (!s_ArkanoidVaus) return; if (InputIsPadConnected(0)) { axis = (InputGetPadAnalog(0) >> 16) & 0xFFU; } int fire = (pInput && pInput->uPad != EMUSYS_DEVICE_DISCONNECTED && (pInput->uPad & SNESIO_JOY_B)) ? 1 : 0; quicknes_snesticle_ext_set_arkanoid_state(0x54U + (axis * 160U + 127U) / 255U, fire); }
+static void qUpdateArkanoidVaus(Emu::SysInputT *pInput) { unsigned axis = 0x80U; if (!s_ArkanoidVaus) return; if (InputIsPadConnected(0)) { axis = (InputGetPadAnalog(0) >> 16) & 0xFFU; } int fire = (pInput && pInput->uPad != EMUSYS_DEVICE_DISCONNECTED && ((*pInput->uPad) & SNESIO_JOY_B)) ? 1 : 0; quicknes_snesticle_ext_set_arkanoid_state(0x54U + (axis * 160U + 127U) / 255U, fire); }
 static void qResetDirectVideo(void) { memset(s_DirectLastPalette, 0, sizeof(s_DirectLastPalette)); s_DirectPaletteValid = s_DirectClutResident = s_DirectReady = false; s_DirectFrameSerial = s_DirectUploadSerial = 0; }
 static void qResetTransient(void) { memset(s_Video, 0, sizeof(s_Video)); memset(s_LastFramePalette, 0, sizeof(s_LastFramePalette)); memset(s_Pending, 0, sizeof(s_Pending)); s_PendingCount = 0; s_PaletteValid = false; qResetDirectVideo(); s_TurboPhase = false; s_TurboFrame = s_TurboSpeedShift = 0; s_SkipVideoNext = false; s_LastSpriteScanlineLimit = s_LastSpriteScreenLimit = -1; }
 static Uint8 qMapPad(Uint16 pad) { if (pad == EMUSYS_DEVICE_DISCONNECTED) return 0; Uint8 nes = 0; if (pad & SNESIO_JOY_B) nes |= 0x01; if (pad & SNESIO_JOY_Y) nes |= 0x02; if ((pad & SNESIO_JOY_A) && s_TurboPhase) nes |= 0x01; if ((pad & SNESIO_JOY_X) && s_TurboPhase) nes |= 0x02; if (pad & SNESIO_JOY_SELECT) nes |= 0x04; if (pad & SNESIO_JOY_START) nes |= 0x08; if (pad & SNESIO_JOY_UP) nes |= 0x10; if (pad & SNESIO_JOY_DOWN) nes |= 0x20; if (pad & SNESIO_JOY_LEFT) nes |= 0x40; if (pad & SNESIO_JOY_RIGHT) nes |= 0x80; return nes; }
@@ -219,26 +219,68 @@ bool QuicknesBridge_DrawDirectGs(Uint32 auroraOutBaseTBP, Int32 logicalY, Float3
     GPPrimTexRect(0, startY << 4, 8, 8, 1280u << 4, (startY + 480u) << 4, (256u << 4) + 8u, (Uint32)(Nes_Emu::image_height << 4) + 8u, 10u << 4, modColor, 0);
     return true;
 }
-
 static void qDrainAudio(CMixBuffer *pMix) {
-    if (!pMix) { s_pEmu->read_samples(NULL, QN_AUDIO_MAX); s_PendingCount = 0; return; }
-    if (s_PendingCount > 0) { memcpy(s_AudioOut, s_Pending, (size_t)s_PendingCount * sizeof(short)); }
-    long count = s_pEmu->read_samples((short *)(s_AudioOut + s_PendingCount), QN_AUDIO_MAX); if (count <= 0) { pMix->Flush(); return; }
-    int n = s_PendingCount + (int)(count > QN_AUDIO_MAX ? QN_AUDIO_MAX : count); int flush = n & ~3; s_PendingCount = n - flush;
-    if (s_PendingCount > 0) { memcpy(s_Pending, s_AudioOut + flush, (size_t)s_PendingCount * sizeof(short)); }
-    if (flush > 0) { pMix->OutputSamplesMono(s_AudioOut, flush); } pMix->Flush();
+    if (!pMix) {
+        s_pEmu->read_samples(NULL, QN_AUDIO_MAX);
+        s_PendingCount = 0;
+        return;
+    }
+    if (s_PendingCount > 0) {
+        memcpy(s_AudioOut, s_Pending, (size_t)s_PendingCount * sizeof(short));
+    }
+    long count = s_pEmu->read_samples((short *)(s_AudioOut + s_PendingCount), QN_AUDIO_MAX);
+    if (count <= 0) {
+        pMix->Flush();
+        return;
+    }
+    int n = s_PendingCount + (int)(count > QN_AUDIO_MAX ? QN_AUDIO_MAX : count);
+    int flush = n & ~3;
+    s_PendingCount = n - flush;
+    if (s_PendingCount > 0) {
+        memcpy(s_Pending, s_AudioOut + flush, (size_t)s_PendingCount * sizeof(short));
+    }
+    if (flush > 0) {
+        pMix->OutputSamplesMono(s_AudioOut, flush);
+    }
+    pMix->Flush();
 }
 
 bool QuicknesBridge_Init(void) {
-    if (s_Initialized) { return true; } s_pEmu = new Nes_Emu(); if (!s_pEmu) return false; s_pAudioBuffer = new Nes_Buffer(); if (!s_pAudioBuffer) { delete s_pEmu; return false; }
-    if (s_pEmu->set_sample_rate(32000, s_pAudioBuffer)) { delete s_pAudioBuffer; delete s_pEmu; return false; }
-    s_pEmu->set_palette_range(0); s_pEmu->set_sprite_mode(Nes_Emu::sprites_visible); s_pEmu->set_pixels(s_Video + 8, QN_VIDEO_W); quicknes_snesticle_set_duty_swap(s_DutySwap ? 1 : 0); qResetTransient(); s_Initialized = true; return true;
+    if (s_Initialized) {
+        return true;
+    }
+    s_pEmu = new Nes_Emu();
+    if (!s_pEmu) return false;
+    s_pAudioBuffer = new Nes_Buffer();
+    if (!s_pAudioBuffer) {
+        delete s_pEmu;
+        return false;
+    }
+    if (s_pEmu->set_sample_rate(32000, s_pAudioBuffer)) {
+        delete s_pAudioBuffer;
+        delete s_pEmu;
+        return false;
+    }
+    s_pEmu->set_palette_range(0);
+    s_pEmu->set_sprite_mode(Nes_Emu::sprites_visible);
+    s_pEmu->set_pixels(s_Video + 8, QN_VIDEO_W);
+    quicknes_snesticle_set_duty_swap(s_DutySwap ? 1 : 0);
+    qResetTransient();
+    s_Initialized = true;
+    return true;
 }
 
-void QuicknesBridge_Shutdown(void) { if (s_pEmu) { s_pEmu->close(); } delete s_pAudioBuffer; delete s_pEmu; s_pEmu = NULL; s_GameLoaded = s_Initialized = false; qResetTransient(); }
+void QuicknesBridge_Shutdown(void) {
+    if (s_pEmu) {
+        s_pEmu->close();
+    }
+    delete s_pAudioBuffer;
+    delete s_pEmu;
+    s_pEmu = NULL;
+    s_GameLoaded = s_Initialized = false;
+    qResetTransient();
+}
 
-bool QuicknesBridge_LoadGame(const void *pData, size_t nBytes, const char *pName) {
-    (void)pName; if (!pData || nBytes < 16 || !QuicknesBridge_Init()) return false; if (s_GameLoaded) { QuicknesBridge_UnloadGame(); } qResetTransient(); s_pEmu->set_pixels(s_Video + 8, QN_VIDEO_W);
 bool QuicknesBridge_LoadGame(const void *pData, size_t nBytes, const char *pName) {
     (void)pName;
     if (!pData || nBytes < 16 || !QuicknesBridge_Init()) return false;
@@ -334,13 +376,13 @@ void QuicknesBridge_RunFrame(Emu::SysInputT *pInput, CRenderSurface *pTarget, CM
     if (!s_GameLoaded || !s_pEmu) return;
     s_TurboPhase = (((s_TurboFrame >> s_TurboSpeedShift) & 1U) == 0U);
     ++s_TurboFrame;
-    if (pInput && (pInput->uPad & SNESIO_JOY_L)) {
+    if (pInput && pInput->uPad && ((*pInput->uPad) & SNESIO_JOY_L)) {
         quicknes_snesticle_set_microphone(1);
     } else {
         quicknes_snesticle_set_microphone(0);
     }
-    Uint8 p1 = pInput ? qMapPad(pInput->uPad) : 0;
-    Uint8 p2 = pInput ? qMapPad(pInput->uPad) : 0;
+    Uint8 p1 = (pInput && pInput->uPad) ? qMapPad(*pInput->uPad) : 0;
+    Uint8 p2 = (pInput && pInput->uPad) ? qMapPad(*pInput->uPad) : 0;
     if (s_LightGunMode != 0) {
         qUpdateLightGunAim(pInput);
         if (s_LightGunMode == 1) {
@@ -369,6 +411,7 @@ void QuicknesBridge_RunFrame(Emu::SysInputT *pInput, CRenderSurface *pTarget, CM
     }
     qDrainAudio(pMixBuf);
 }
+
 int QuicknesBridge_GetStateSize(void) {
     return s_GameLoaded ? QUICKNES_STATE_CAPACITY : 0;
 }
