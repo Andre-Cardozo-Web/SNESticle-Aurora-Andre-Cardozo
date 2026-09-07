@@ -31,6 +31,7 @@ extern "C" {
 #include "Data_Reader.h"
 #include "abstract_file.h"
 #include "nes_ntsc.h"
+
 extern "C" void quicknes_snesticle_set_duty_swap(int enable);
 extern "C" void quicknes_snesticle_set_microphone(int enable);
 extern "C" void quicknes_snesticle_ext_set_arkanoid(int enable);
@@ -46,6 +47,7 @@ extern "C" void quicknes_snesticle_ext_turbofile_clear_dirty(void);
 extern "C" unsigned char *quicknes_snesticle_ext_battlebox_data(void);
 extern "C" int quicknes_snesticle_ext_battlebox_dirty(void);
 extern "C" void quicknes_snesticle_ext_battlebox_clear_dirty(void);
+
 static bool s_Initialized = false;
 static bool s_GameLoaded  = false;
 static bool s_DutySwap    = false;
@@ -90,7 +92,7 @@ static void qGetRgb(unsigned ci, Uint8 *r, Uint8 *g, Uint8 *b) {
     if (ci >= (unsigned)Nes_Emu::color_table_size) ci = 0;
     if (s_CustomPaletteValid) {
         const Uint8 *p = s_CustomExpandedPalette + ci * 3;
-        *r = p[0]; *g = p[1]; *b = p[2];
+        *r = *(p + 0); *g = *(p + 1); *b = *(p + 2);
     } else {
         const Nes_Emu::rgb_t &rgb = Nes_Emu::nes_colors[ci];
         *r = rgb.red; *g = rgb.green; *b = rgb.blue;
@@ -105,13 +107,22 @@ static Uint32 s_DirectFrameSerial = 0;
 static Uint32 s_DirectUploadSerial = 0;
 
 static Int16 s_AudioOut[QN_AUDIO_MAX + 4];
-static Int16 s_Pending[4];
+static Int16 s_Pending[QN_AUDIO_MAX + 4];
 static int   s_PendingCount = 0;
 
 static Uint32 qCrc32(const Uint8 *pData, size_t nBytes) {
-    static const Uint32 table[16] = { 0x00000000U, 0x1DB71064U, 0x3B6E20C8U, 0x26D930ACU, 0x76DC4190U, 0x6B6B51F4U, 0x4DB26158U, 0x5005713CU, 0xEDB88320U, 0xF00F9344U, 0xD6D6A3E8U, 0xCB61B38CU, 0x9B64C2B0U, 0x86D3D2D4U, 0xA00AE278U, 0xBDBDF21CU };
+    static const Uint32 table[16] = {
+        0x00000000U, 0x1DB71064U, 0x3B6E20C8U, 0x26D930ACU,
+        0x76DC4190U, 0x6B6B51F4U, 0x4DB26158U, 0x5005713CU,
+        0xEDB88320U, 0xF00F9344U, 0xD6D6A3E8U, 0xCB61B38CU,
+        0x9B64C2B0U, 0x86D3D2D4U, 0xA00AE278U, 0xBDBDF21CU
+    };
     Uint32 crc = 0xFFFFFFFFU;
-    while (nBytes--) { crc ^= *pData++; crc = (crc >> 4) ^ table[crc & 0x0FU]; crc = (crc >> 4) ^ table[crc & 0x0FU]; }
+    while (nBytes--) {
+        crc ^= *pData++;
+        crc = (crc >> 4) ^ table[crc & 0x0FU];
+        crc = (crc >> 4) ^ table[crc & 0x0FU];
+    }
     return crc ^ 0xFFFFFFFFU;
 }
 
@@ -124,21 +135,18 @@ static Uint32 qNesPayloadCrc32(const void *pData, size_t nBytes) {
     return qCrc32(rom + offset, payload);
 }
 
-static int qNes2DefaultExpansionDevice(const void *pData, size_t nBytes) {
-    const Uint8 *rom = (const Uint8 *)pData;
-    if (!rom || nBytes < 16 || rom[0] != 'N' || rom[1] != 'E' || rom[2] != 'S' || rom[3] != 0x1A) return -1;
-    if ((rom[7] & 0x0CU) != 0x08U) return -1;
-    return (int)(rom[15] & 0x3FU);
-}
-
-static bool qLegacyTurboFileCrc(Uint32 crc) { return (crc == 0x012E12E3U || crc == 0x0719E982U || crc == 0x149C0EC3U || crc == 0x1A5CE587U || crc == 0x21DD2174U || crc == 0x2A3CA509U); }
-static bool qBattleBoxCrc(Uint32 crc) { return (crc == 0x61A852EAU || crc == 0x78B657ACU || crc == 0x803B9979U || crc == 0xC22BC87BU); }
 static bool qFamicomLightGunCrc(Uint32 crc) { return (crc == 0x0AFB395EU || crc == 0x24598791U || crc == 0x2A6559A1U); }
 static bool qTwoNesZapperCrc(Uint32 crc) { return (crc == 0x231BC76EU || crc == 0xB79F2651U || crc == 0xD15009CCU); }
 static bool qNesZapperCrc(Uint32 crc) { return (crc == 0x01B87025U || crc == 0x04A6B46DU || crc == 0x051E60C6U); }
-static int qLightGunModeForCrc(Uint32 crc) { if (qFamicomLightGunCrc(crc)) return 2; if (qTwoNesZapperCrc(crc)) return 3; if (qNesZapperCrc(crc)) return 1; return 0; }
-static void qResetLightGunAim(void) { s_GunX = 128 << 8; s_GunY = 120 << 8; s_GunVX = s_GunVY = 0; }
 
+static int qLightGunModeForCrc(Uint32 crc) {
+    if (qFamicomLightGunCrc(crc)) return 2;
+    if (qTwoNesZapperCrc(crc)) return 3;
+    if (qNesZapperCrc(crc)) return 1;
+    return 0;
+}
+
+static void qResetLightGunAim(void) { s_GunX = 128 << 8; s_GunY = 120 << 8; s_GunVX = s_GunVY = 0; }
 static Int32 qGunTargetVelocity(unsigned axis) { Int32 d = (Int32)axis - 128; if (d < 0 ? -d : d <= 20) return 0; Int32 speed = 160 + ((d < 0 ? -d : d - 20) * 1056 + 53) / 107; return (d < 0 ? -1 : 1) * (speed > 1216 ? 1216 : speed); }
 static Int32 qGunApproach(Int32 v, Int32 t, Int32 s) { if (v < t) return (v + s > t) ? t : v + s; if (v > t) return (v - s < t) ? t : v - s; return v; }
 static Int32 qGunVelocityStep(Int32 c, Int32 t) { if (!t) return 320; if ((c < 0 && t > 0) || (c > 0 && t < 0)) return 256; return 80; }
@@ -154,6 +162,7 @@ static void qUpdateLightGunAim(Emu::SysInputT *pInput) {
     if (s_GunX < 1536) s_GunX = 1536; if (s_GunX > 63744) s_GunX = 63744; if (s_GunY < 1536) s_GunY = 1536; if (s_GunY > 59648) s_GunY = 59648;
     quicknes_snesticle_ext_set_lightgun_state((int)(s_GunX >> 8), (int)(s_GunY >> 8), trigger ? 1 : 0, offscreen ? 1 : 0);
 }
+
 static void qUpdateArkanoidVaus(Emu::SysInputT *pInput) { unsigned axis = 0x80U; if (!s_ArkanoidVaus) return; if (InputIsPadConnected(0)) axis = (InputGetPadAnalog(0) >> 16) & 0xFFU; int fire = (pInput && pInput->uPad != EMUSYS_DEVICE_DISCONNECTED && (pInput->uPad & SNESIO_JOY_B)) ? 1 : 0; quicknes_snesticle_ext_set_arkanoid_state(0x54U + (axis * 160U + 127U) / 255U, fire); }
 static void qResetDirectVideo(void) { memset(s_DirectLastPalette, 0, sizeof(s_DirectLastPalette)); s_DirectPaletteValid = s_DirectClutResident = s_DirectReady = false; s_DirectFrameSerial = s_DirectUploadSerial = 0; }
 static void qResetTransient(void) { memset(s_Video, 0, sizeof(s_Video)); memset(s_LastFramePalette, 0, sizeof(s_LastFramePalette)); memset(s_Pending, 0, sizeof(s_Pending)); s_PendingCount = 0; s_PaletteValid = false; qResetDirectVideo(); s_TurboPhase = false; s_TurboFrame = s_TurboSpeedShift = 0; s_SkipVideoNext = false; s_LastSpriteScanlineLimit = s_LastSpriteScreenLimit = -1; }
@@ -188,10 +197,10 @@ bool QuicknesBridge_DrawDirectGs(Uint32 auroraOutBaseTBP, Int32 logicalY, Float3
 }
 static void qDrainAudio(CMixBuffer *pMix) {
     if (!pMix) { s_pEmu->read_samples(NULL, QN_AUDIO_MAX); s_PendingCount = 0; return; }
-    if (s_PendingCount > 0) memcpy(s_AudioOut, s_Pending, (size_t)s_PendingCount * sizeof(s_Pending));
+    if (s_PendingCount > 0) memcpy(s_AudioOut, s_Pending, (size_t)s_PendingCount * sizeof(short));
     long count = s_pEmu->read_samples((short *)(s_AudioOut + s_PendingCount), QN_AUDIO_MAX); if (count <= 0) { pMix->Flush(); return; }
     int n = s_PendingCount + (int)(count > QN_AUDIO_MAX ? QN_AUDIO_MAX : count); int flush = n & ~3; s_PendingCount = n - flush;
-    if (s_PendingCount > 0) memcpy(s_Pending, s_AudioOut + flush, (size_t)s_PendingCount * sizeof(s_Pending));
+    if (s_PendingCount > 0) memcpy(s_Pending, s_AudioOut + flush, (size_t)s_PendingCount * sizeof(short));
     if (flush > 0) pMix->OutputSamplesMono(s_AudioOut, flush); pMix->Flush();
 }
 
@@ -204,6 +213,7 @@ bool QuicknesBridge_Init(void) {
 void QuicknesBridge_Shutdown(void) { if (s_pEmu) s_pEmu->close(); delete s_pAudioBuffer; delete s_pEmu; s_pEmu = NULL; s_GameLoaded = s_Initialized = false; qResetTransient(); }
 
 bool QuicknesBridge_LoadGame(const void *pData, size_t nBytes, const char *pName) {
+    (void)pName;
     if (!pData || nBytes < 16 || !QuicknesBridge_Init()) return false; if (s_GameLoaded) QuicknesBridge_UnloadGame(); qResetTransient(); s_pEmu->set_pixels(s_Video + 8, QN_VIDEO_W);
     Mem_File_Reader reader(pData, (long)nBytes); if (s_pEmu->load_ines(reader)) { s_pEmu->close(); return false; }
     Uint32 payloadCrc = qNesPayloadCrc32(pData, nBytes); s_LightGunDetectedMode = qLightGunModeForCrc(payloadCrc); s_LightGunMode = s_LightGunEnabled ? s_LightGunDetectedMode : 0; s_ArkanoidVaus = (payloadCrc == 0xD89E5A67U);
@@ -214,14 +224,13 @@ void QuicknesBridge_UnloadGame(void) { if (s_Initialized && s_pEmu) s_pEmu->clos
 void QuicknesBridge_Reset(void) { if (s_GameLoaded) s_pEmu->reset(true, false); s_PendingCount = 0; s_PaletteValid = false; qResetDirectVideo(); quicknes_snesticle_ext_reset_bus(); }
 void QuicknesBridge_SoftReset(void) { if (s_GameLoaded) s_pEmu->reset(false, false); s_PendingCount = 0; s_PaletteValid = false; qResetDirectVideo(); quicknes_snesticle_ext_reset_bus(); }
 void QuicknesBridge_SetDutySwap(bool enabled) { s_DutySwap = enabled; quicknes_snesticle_set_duty_swap(enabled ? 1 : 0); }
-
 bool QuicknesBridge_SetPalette(const Uint8 *rgb192) { nes_ntsc_setup_t setup; if (!rgb192) return false; memcpy(s_CustomBasePalette, rgb192, sizeof(s_CustomBasePalette)); setup = nes_ntsc_rgb; setup.palette = NULL; setup.base_palette = s_CustomBasePalette; setup.palette_out = s_CustomExpandedPalette; nes_ntsc_init(NULL, &setup); s_CustomPaletteValid = true; s_PaletteValid = s_DirectPaletteValid = s_DirectClutResident = false; return true; }
 void QuicknesBridge_SetTurboSpeed(unsigned s) { if (s_TurboSpeedShift != (s <= 2U ? s : 0U)) { s_TurboSpeedShift = (s <= 2U ? s : 0U); s_TurboFrame = 0; s_TurboPhase = true; } }
 void QuicknesBridge_SetSkipVideo(bool skip) { s_SkipVideoNext = skip; }
 
 void QuicknesBridge_RunFrame(Emu::SysInputT *pInput, CRenderSurface *pTarget, CMixBuffer *pMixBuf) {
-    if (!s_GameLoaded || !s_pEmu) return; s_TurboPhase = (((s_TurboFrame >> s_TurboSpeedShift) & 1U) == 0U); ++s_TurboFrame; quicknes_snesticle_set_microphone((pInput && (pInput->uPad & SNESIO_JOY_L)) ? 1 : 0);
-    Uint8 p1 = pInput ? qMapPad(pInput->uPad) : 0; Uint8 p2 = pInput ? qMapPad(pInput->uPad) : 0; if (s_LightGunMode != 0) { qUpdateLightGunAim(pInput); if (s_LightGunMode == 1) p2 = 0; else if (s_LightGunMode == 3) p1 = p2 = 0; }
+    if (!s_GameLoaded || !s_pEmu) return; s_TurboPhase = (((s_TurboFrame >> s_TurboSpeedShift) & 1U) == 0U); ++s_TurboFrame; quicknes_snesticle_set_microphone((pInput && (pInput->uPad[0] & SNESIO_JOY_L)) ? 1 : 0);
+    Uint8 p1 = pInput ? qMapPad(pInput->uPad[0]) : 0; Uint8 p2 = pInput ? qMapPad(pInput->uPad[1]) : 0; if (s_LightGunMode != 0) { qUpdateLightGunAim(pInput); if (s_LightGunMode == 1) p2 = 0; else if (s_LightGunMode == 3) p1 = p2 = 0; }
     if (s_ArkanoidVaus) { p1 &= (Uint8)~0x01U; qUpdateArkanoidVaus(pInput); } if (s_pEmu->emulate_frame((int)p1, (int)p2)) { qDrainAudio(pMixBuf); return; }
     const Nes_Emu::frame_t &frame = s_pEmu->frame(); s_DirectReady = frame.pixels && frame.pitch == QN_VIDEO_W && (((uintptr_t)frame.pixels & 15u) == 0u); if (s_DirectReady) { if (++s_DirectFrameSerial == 0) { s_DirectFrameSerial = 1; s_DirectUploadSerial = 0; } } else qRenderFrame(pTarget); qDrainAudio(pMixBuf);
 }
@@ -230,7 +239,6 @@ int QuicknesBridge_GetStateSize(void) { return s_GameLoaded ? QUICKNES_STATE_CAP
 int QuicknesBridge_SaveState(void *p, int n) { if (!s_GameLoaded || !s_pEmu || !p || n <= 0) return 0; Mem_Writer w(p, (long)(n > QUICKNES_STATE_CAPACITY ? QUICKNES_STATE_CAPACITY : n)); return s_pEmu->save_state(w) ? 0 : (int)w.size(); }
 bool QuicknesBridge_LoadState(const void *p, int n) { if (!s_GameLoaded || !p || n <= 0) return false; Mem_File_Reader r(p, (long)n); if (s_pEmu->load_state(r)) return false; s_PendingCount = 0; s_PaletteValid = false; qResetDirectVideo(); quicknes_snesticle_ext_reset_bus(); return true; }
 int QuicknesBridge_GetSRAMBytes(void) { return (s_GameLoaded && s_pEmu->cart() && s_pEmu->has_battery_ram()) ? (int)s_pEmu->battery_ram_size() : 0; }
-
 uint8_t *QuicknesBridge_GetSRAMData(void) { return QuicknesBridge_GetSRAMBytes() <= 0 ? NULL : s_pEmu->high_mem(); }
 bool QuicknesBridge_IsArkanoidVaus(void) { return s_ArkanoidVaus; }
 bool QuicknesBridge_TurboFileEnabled(void) { return s_TurboFileEnabled; }
@@ -238,7 +246,6 @@ int QuicknesBridge_GetTurboFileBytes(void) { return 0x2000; }
 uint8_t *QuicknesBridge_GetTurboFileData(void) { return quicknes_snesticle_ext_turbofile_data(); }
 bool QuicknesBridge_TurboFileDirty(void) { return quicknes_snesticle_ext_turbofile_dirty() != 0; }
 void QuicknesBridge_ClearTurboFileDirty(void) { quicknes_snesticle_ext_turbofile_clear_dirty(); }
-
 void QuicknesBridge_SetLightGunEnabled(bool e) { s_LightGunEnabled = e; int m = e ? s_LightGunDetectedMode : 0; if (m != s_LightGunMode) { s_LightGunMode = m; quicknes_snesticle_ext_set_lightgun(s_LightGunMode); quicknes_snesticle_ext_reset_bus(); if (s_LightGunMode != 0) qResetLightGunAim(); } }
 bool QuicknesBridge_GetLightGunEnabled(void) { return s_LightGunEnabled; }
 bool QuicknesBridge_LightGunActive(void) { return s_GameLoaded && s_LightGunMode != 0; }
@@ -249,7 +256,6 @@ void QuicknesBridge_DrawLightGunCursor(Int32 lY) {
     GPPrimRect((Uint32)(x - 6) << 4, (Uint32)y << 4, 0x80000000u, (Uint32)(x + 7) << 4, (Uint32)(y + 1) << 4, 0x80000000u, 9u << 4, 0); GPPrimRect((Uint32)x << 4, (Uint32)(y - 6) << 4, 0x80000000u, (Uint32)(x + 1) << 4, (Uint32)(y + 7) << 4, 0x80000000u, 9u << 4, 0);
     GPPrimRect((Uint32)(x - 5) << 4, (Uint32)y << 4, 0x80FFFFFFu, (Uint32)(x + 6) << 4, (Uint32)(y + 1) << 4, 0x80FFFFFFu, 9u << 4, 0); GPPrimRect((Uint32)x << 4, (Uint32)(y - 5) << 4, 0x80FFFFFFu, (Uint32)(x + 1) << 4, (Uint32)(y + 6) << 4, 0x80FFFFFFu, 9u << 4, 0);
 }
-
 bool QuicknesBridge_BattleBoxEnabled(void) { return s_BattleBoxEnabled; }
 int QuicknesBridge_GetBattleBoxBytes(void) { return 0x0200; }
 uint8_t *QuicknesBridge_GetBattleBoxData(void) { return quicknes_snesticle_ext_battlebox_data(); }
